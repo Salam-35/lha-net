@@ -1,0 +1,353 @@
+import numpy as np
+import nibabel as nib
+import SimpleITK as sitk
+from typing import Tuple, Optional, Dict, Union
+import os
+from scipy import ndimage
+from pathlib import Path
+
+
+class AMOS22Preprocessor:
+    """Preprocessing pipeline for AMOS22 dataset optimized for LHA-Net"""
+
+    def __init__(
+        self,
+        target_spacing: Tuple[float, float, float] = (1.5, 1.5, 1.5),
+        target_size: Optional[Tuple[int, int, int]] = None,
+        intensity_normalization: str = "z_score",
+        clip_range: Tuple[float, float] = (-200, 300),
+        resampling_method: str = "linear"
+    ):
+        self.target_spacing = target_spacing
+        self.target_size = target_size
+        self.intensity_normalization = intensity_normalization
+        self.clip_range = clip_range
+        self.resampling_method = resampling_method
+
+    def _load_image(self, image_path: Union[str, Path]) -> Tuple[np.ndarray, Dict]:
+        """Load medical image and extract metadata"""
+        if str(image_path).endswith('.nii.gz') or str(image_path).endswith('.nii'):
+            # Use nibabel for NIfTI files
+            img = nib.load(str(image_path))
+            image_data = img.get_fdata().astype(np.float32)
+            affine = img.affine
+            header = img.header
+
+            # Get spacing from header
+            spacing = header.get_zooms()[:3]
+
+            metadata = {
+                'original_spacing': spacing,
+                'original_shape': image_data.shape,
+                'affine': affine,
+                'header': header
+            }
+
+        else:
+            # Use SimpleITK for other formats
+            img = sitk.ReadImage(str(image_path))
+            image_data = sitk.GetArrayFromImage(img).astype(np.float32)
+            spacing = img.GetSpacing()[::-1]  # ITK uses (x,y,z), we want (z,y,x)
+            origin = img.GetOrigin()
+            direction = img.GetDirection()
+
+            metadata = {
+                'original_spacing': spacing,
+                'original_shape': image_data.shape,
+                'origin': origin,
+                'direction': direction,
+                'sitk_image': img
+            }
+
+        return image_data, metadata
+
+    def _resample_image(
+        self,
+        image: np.ndarray,
+        original_spacing: Tuple[float, float, float],
+        target_spacing: Tuple[float, float, float],
+        is_label: bool = False
+    ) -> np.ndarray:
+        """Resample image to target spacing"""
+        # Calculate new shape
+        original_shape = image.shape
+        scale_factors = [orig_sp / target_sp for orig_sp, target_sp in zip(original_spacing, target_spacing)]
+
+        new_shape = [int(orig_size * scale_factor) for orig_size, scale_factor in zip(original_shape, scale_factors)]
+
+        # Choose interpolation order
+        if is_label:
+            order = 0  # Nearest neighbor for labels
+        else:
+            order = 1 if self.resampling_method == "linear" else 3  # Linear or cubic for images
+
+        # Resample using scipy
+        resampled = ndimage.zoom(image, scale_factors, order=order, prefilter=False)
+
+        return resampled
+
+    def _normalize_intensity(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
+        """Normalize image intensity"""
+        # Clip values
+        image = np.clip(image, self.clip_range[0], self.clip_range[1])
+
+        if self.intensity_normalization == "z_score":
+            if mask is not None:
+                # Compute statistics only within the mask (e.g., body region)
+                masked_values = image[mask > 0]
+                if len(masked_values) > 0:
+                    mean_val = np.mean(masked_values)
+                    std_val = np.std(masked_values)
+                else:
+                    mean_val = np.mean(image)
+                    std_val = np.std(image)
+            else:
+                mean_val = np.mean(image)
+                std_val = np.std(image)
+
+            if std_val > 0:
+                image = (image - mean_val) / std_val
+            else:
+                image = image - mean_val
+
+        elif self.intensity_normalization == "min_max":
+            min_val = np.min(image)
+            max_val = np.max(image)
+            if max_val > min_val:
+                image = (image - min_val) / (max_val - min_val)
+
+        elif self.intensity_normalization == "percentile":
+            # Use 1st and 99th percentiles for robust normalization
+            p1 = np.percentile(image, 1)
+            p99 = np.percentile(image, 99)
+            image = np.clip(image, p1, p99)
+            if p99 > p1:
+                image = (image - p1) / (p99 - p1)
+
+        return image.astype(np.float32)
+
+    def _resize_to_target_size(self, image: np.ndarray, is_label: bool = False) -> np.ndarray:
+        """Resize image to target size if specified"""
+        if self.target_size is None:
+            return image
+
+        current_shape = image.shape
+        scale_factors = [target / current for target, current in zip(self.target_size, current_shape)]
+
+        order = 0 if is_label else 1
+        resized = ndimage.zoom(image, scale_factors, order=order, prefilter=False)
+
+        return resized
+
+    def _create_body_mask(self, image: np.ndarray, threshold: float = -500) -> np.ndarray:
+        """Create a simple body mask for more accurate normalization"""
+        # Simple threshold-based body mask
+        body_mask = image > threshold
+
+        # Remove small connected components
+        body_mask = ndimage.binary_opening(body_mask, structure=np.ones((3, 3, 3)))
+
+        # Fill holes
+        body_mask = ndimage.binary_fill_holes(body_mask)
+
+        return body_mask.astype(np.uint8)
+
+    def preprocess_case(
+        self,
+        image_path: Union[str, Path],
+        label_path: Optional[Union[str, Path]] = None,
+        save_preprocessed: bool = False,
+        output_dir: Optional[Union[str, Path]] = None
+    ) -> Dict[str, Union[np.ndarray, Dict]]:
+        """
+        Preprocess a single case (image and optionally label)
+
+        Args:
+            image_path: Path to the image file
+            label_path: Path to the label file (optional)
+            save_preprocessed: Whether to save preprocessed data
+            output_dir: Directory to save preprocessed data
+
+        Returns:
+            Dictionary containing preprocessed image, label, and metadata
+        """
+        # Load image
+        image, image_metadata = self._load_image(image_path)
+        original_spacing = image_metadata['original_spacing']
+
+        # Create body mask for better normalization
+        body_mask = self._create_body_mask(image)
+
+        # Normalize intensity
+        image_normalized = self._normalize_intensity(image, body_mask)
+
+        # Resample to target spacing
+        image_resampled = self._resample_image(
+            image_normalized,
+            original_spacing,
+            self.target_spacing,
+            is_label=False
+        )
+
+        # Resize to target size if specified
+        image_final = self._resize_to_target_size(image_resampled, is_label=False)
+
+        result = {
+            'image': image_final,
+            'original_image': image,
+            'body_mask': self._resample_image(body_mask, original_spacing, self.target_spacing, is_label=True),
+            'metadata': {
+                **image_metadata,
+                'preprocessed_spacing': self.target_spacing,
+                'preprocessed_shape': image_final.shape,
+                'normalization': self.intensity_normalization,
+                'clip_range': self.clip_range
+            }
+        }
+
+        # Process label if provided
+        if label_path is not None:
+            label, label_metadata = self._load_image(label_path)
+
+            # Resample label (using nearest neighbor)
+            label_resampled = self._resample_image(
+                label,
+                original_spacing,
+                self.target_spacing,
+                is_label=True
+            )
+
+            # Resize label to target size
+            label_final = self._resize_to_target_size(label_resampled, is_label=True)
+
+            result['label'] = label_final.astype(np.uint8)
+            result['original_label'] = label
+            result['metadata']['label_metadata'] = label_metadata
+
+        # Save preprocessed data if requested
+        if save_preprocessed and output_dir is not None:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            case_name = Path(image_path).stem.replace('.nii', '')
+
+            # Save image
+            image_output_path = output_dir / f"{case_name}_image.npy"
+            np.save(image_output_path, image_final)
+
+            # Save label if available
+            if 'label' in result:
+                label_output_path = output_dir / f"{case_name}_label.npy"
+                np.save(label_output_path, result['label'])
+
+            # Save metadata
+            metadata_path = output_dir / f"{case_name}_metadata.npy"
+            np.save(metadata_path, result['metadata'])
+
+        return result
+
+    def preprocess_dataset(
+        self,
+        data_dir: Union[str, Path],
+        output_dir: Union[str, Path],
+        split: str = "train"
+    ) -> Dict[str, List[str]]:
+        """
+        Preprocess entire dataset
+
+        Args:
+            data_dir: Directory containing the dataset
+            output_dir: Directory to save preprocessed data
+            split: Dataset split ("train", "val", "test")
+
+        Returns:
+            Dictionary mapping case IDs to preprocessed file paths
+        """
+        data_dir = Path(data_dir)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Find all image files
+        if split == "train":
+            image_pattern = "amos_*"
+        else:
+            image_pattern = f"amos_{split}_*"
+
+        image_files = list(data_dir.glob(f"images{os.sep}{image_pattern}.nii.gz"))
+        if not image_files:
+            image_files = list(data_dir.glob(f"images{os.sep}{image_pattern}.nii"))
+
+        preprocessed_files = {}
+
+        for image_path in image_files:
+            case_id = image_path.stem.replace('.nii', '')
+
+            # Find corresponding label file
+            label_path = data_dir / "labels" / f"{case_id}.nii.gz"
+            if not label_path.exists():
+                label_path = data_dir / "labels" / f"{case_id}.nii"
+                if not label_path.exists():
+                    label_path = None
+
+            print(f"Preprocessing {case_id}...")
+
+            try:
+                # Preprocess the case
+                result = self.preprocess_case(
+                    image_path=image_path,
+                    label_path=label_path,
+                    save_preprocessed=True,
+                    output_dir=output_dir
+                )
+
+                # Store file paths
+                preprocessed_files[case_id] = {
+                    'image': str(output_dir / f"{case_id}_image.npy"),
+                    'label': str(output_dir / f"{case_id}_label.npy") if label_path else None,
+                    'metadata': str(output_dir / f"{case_id}_metadata.npy")
+                }
+
+            except Exception as e:
+                print(f"Error preprocessing {case_id}: {str(e)}")
+                continue
+
+        # Save preprocessing summary
+        summary_path = output_dir / f"preprocessing_summary_{split}.npy"
+        np.save(summary_path, preprocessed_files)
+
+        print(f"Preprocessed {len(preprocessed_files)} cases for {split} split")
+        return preprocessed_files
+
+    def get_dataset_statistics(self, preprocessed_files: Dict[str, Dict[str, str]]) -> Dict[str, Union[float, List]]:
+        """Compute dataset statistics from preprocessed files"""
+        intensities = []
+        shapes = []
+        spacings = []
+
+        for case_id, file_paths in preprocessed_files.items():
+            # Load image and metadata
+            image = np.load(file_paths['image'])
+            metadata = np.load(file_paths['metadata'], allow_pickle=True).item()
+
+            intensities.extend(image.flatten())
+            shapes.append(image.shape)
+            spacings.append(metadata['preprocessed_spacing'])
+
+        intensities = np.array(intensities)
+
+        statistics = {
+            'mean_intensity': float(np.mean(intensities)),
+            'std_intensity': float(np.std(intensities)),
+            'min_intensity': float(np.min(intensities)),
+            'max_intensity': float(np.max(intensities)),
+            'percentile_1': float(np.percentile(intensities, 1)),
+            'percentile_99': float(np.percentile(intensities, 99)),
+            'median_intensity': float(np.median(intensities)),
+            'mean_shape': [float(np.mean([s[i] for s in shapes])) for i in range(3)],
+            'std_shape': [float(np.std([s[i] for s in shapes])) for i in range(3)],
+            'all_shapes': shapes,
+            'target_spacing': spacings[0] if spacings else None,
+            'num_cases': len(preprocessed_files)
+        }
+
+        return statistics
