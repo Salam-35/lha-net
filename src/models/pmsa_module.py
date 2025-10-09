@@ -134,6 +134,8 @@ class PMSAModule(nn.Module):
         scale_features = []
         progressive_features = []
 
+        # Progressive multi-scale fusion (CORE FEATURE - DO NOT REMOVE)
+        # This progressively aggregates information from coarse to fine scales
         for i, (scale_att, scale, context) in enumerate(zip(self.scale_attentions, self.scales, self.organ_contexts)):
             scale_feat = scale_att(x)
             scale_features.append(scale_feat)
@@ -141,25 +143,34 @@ class PMSAModule(nn.Module):
             if i == 0:
                 progressive_feat = scale_feat
             else:
+                # Concatenate ALL scale features seen so far
+                # This is the key: progressive fusion aggregates cumulative multi-scale information
                 concatenated = torch.cat(scale_features[:i+1], dim=1)
                 progressive_feat = self.progressive_fusion[i-1](concatenated)
 
             progressive_features.append(progressive_feat)
 
-        all_features = torch.cat(scale_features, dim=1)
-        fused_features = self.final_fusion(all_features)
+        # Final fusion using all progressive features (which already aggregate multi-scale info)
+        # The progressive features are the KEY: they contain cumulative multi-scale information
+        all_progressive = torch.cat(progressive_features, dim=1)
+        fused_features = self.final_fusion(all_progressive)
 
         gate_weights = self.gate_conv(fused_features)
-        gate_weights = rearrange(gate_weights, 'b s h w d -> b s 1 1 1') if len(gate_weights.shape) == 5 else gate_weights
+        # gate_weights shape: [b, num_scales, h, w, d]
+        # Reshape to [b, num_scales, 1, 1, 1] for broadcasting
+        if len(gate_weights.shape) == 5:
+            gate_weights = gate_weights.mean(dim=[2, 3, 4], keepdim=True)
 
+        # Apply gating to progressive features (not raw scale features)
+        # This allows the network to select which level of progressive aggregation is most useful
         weighted_features = []
-        for i, feat in enumerate(scale_features):
+        for i, feat in enumerate(progressive_features):
             weight = gate_weights[:, i:i+1]
             weighted_features.append(feat * weight)
 
         final_output = sum(weighted_features)
 
-        return final_output, scale_features
+        return final_output, progressive_features
 
 
 class HierarchicalPMSA(nn.Module):
@@ -181,8 +192,8 @@ class HierarchicalPMSA(nn.Module):
 
         self.cross_scale_fusion = nn.ModuleList([
             nn.Sequential(
-                nn.Conv3d(channels_list[i] + channels_list[i+1], channels_list[i], 1),
-                nn.BatchNorm3d(channels_list[i]),
+                nn.Conv3d(channels_list[i] + channels_list[i+1], channels_list[i+1], 1),
+                nn.BatchNorm3d(channels_list[i+1]),
                 nn.ReLU(inplace=True)
             ) for i in range(len(channels_list) - 1)
         ])
@@ -207,7 +218,7 @@ class HierarchicalPMSA(nn.Module):
                     mode='trilinear',
                     align_corners=False
                 )
-                fused = torch.cat([pmsa_outputs[i], upsampled_prev], dim=1)
+                fused = torch.cat([upsampled_prev, pmsa_outputs[i]], dim=1)
                 fused_output = self.cross_scale_fusion[i-1](fused)
                 hierarchical_outputs.append(fused_output)
 

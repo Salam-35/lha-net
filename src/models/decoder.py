@@ -128,7 +128,7 @@ class OrganSizeAwareDecoder(nn.Module):
             ) for i in range(1, len(feature_channels))
         ])
 
-        self.final_classifier = nn.Conv3d(decoder_channels[-1], num_classes, 1)
+        self.final_classifier = nn.Conv3d(feature_channels[-1], num_classes, 1)
 
         self.routing_gate = nn.Sequential(
             nn.Conv3d(feature_channels[-1], feature_channels[-1] // 4, 1),
@@ -172,13 +172,14 @@ class OrganSizeAwareDecoder(nn.Module):
 
         fused_features = [features[0]]
         for i in range(1, len(features)):
-            upsampled_prev = F.interpolate(
+            # Downsample previous feature to match current feature size
+            downsampled_prev = F.interpolate(
                 fused_features[i-1],
                 size=features[i].shape[2:],
                 mode='trilinear',
                 align_corners=False
             )
-            concatenated = torch.cat([features[i], upsampled_prev], dim=1)
+            concatenated = torch.cat([features[i], downsampled_prev], dim=1)
             fused = self.feature_fusion[i-1](concatenated)
             fused_features.append(fused)
 
@@ -200,8 +201,8 @@ class OrganSizeAwareDecoder(nn.Module):
                     )
                 size_outputs.append(decoder_output)
 
-            size_weights = routing_weights if level == len(fused_features) - 1 else \
-                          F.interpolate(routing_weights, size=feat.shape[2:], mode='trilinear', align_corners=False)
+            # Interpolate routing weights to match target_size for proper broadcasting
+            size_weights = F.interpolate(routing_weights, size=target_size, mode='trilinear', align_corners=False)
 
             weighted_output = (
                 size_outputs[0] * size_weights[:, 0:1] +

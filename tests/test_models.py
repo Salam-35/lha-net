@@ -19,8 +19,8 @@ class TestModelInitialization(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures"""
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.batch_size = 2
-        self.input_shape = (self.batch_size, 1, 64, 128, 128)  # (B, C, D, H, W)
+        self.batch_size = 1  # Reduced for 16GB GPU
+        self.input_shape = (self.batch_size, 1, 48, 96, 96)  # (B, C, D, H, W) - smaller for testing
         self.num_classes = 14
 
     def test_lightweight_backbone_initialization(self):
@@ -32,8 +32,8 @@ class TestModelInitialization(unittest.TestCase):
         )
 
         # Test forward pass
-        x = torch.randn(self.input_shape, device=self.device)
         backbone = backbone.to(self.device)
+        x = torch.randn(self.input_shape, device=self.device)
 
         features = backbone(x)
 
@@ -68,8 +68,8 @@ class TestModelInitialization(unittest.TestCase):
             organ_contexts=["small", "small", "medium", "medium", "large"]
         ).to(self.device)
 
-        # Create input feature map
-        x = torch.randn(self.batch_size, in_channels, 32, 64, 64, device=self.device)
+        # Create input feature map (smaller for memory efficiency)
+        x = torch.randn(self.batch_size, in_channels, 24, 48, 48, device=self.device)
 
         # Forward pass
         output, scale_features = pmsa(x)
@@ -91,7 +91,7 @@ class TestModelInitialization(unittest.TestCase):
 
         # Create input feature maps
         feature_maps = []
-        base_size = [32, 64, 64]
+        base_size = [24, 48, 48]  # Reduced for memory efficiency
         for i, channels in enumerate(channels_list):
             # Reduce spatial size for deeper features
             size = [s // (2 ** i) for s in base_size]
@@ -120,14 +120,14 @@ class TestModelInitialization(unittest.TestCase):
 
         # Create input features
         features = []
-        base_size = [32, 64, 64]
+        base_size = [24, 48, 48]  # Reduced for memory efficiency
         for i, channels in enumerate(feature_channels):
             size = [s // (2 ** i) for s in base_size]
             feat = torch.randn(self.batch_size, channels, *size, device=self.device)
             features.append(feat)
 
         # Forward pass
-        result = decoder(features, target_size=(64, 128, 128))
+        result = decoder(features, target_size=(48, 96, 96))
 
         # Check outputs
         self.assertIn('final_output', result)
@@ -135,7 +135,7 @@ class TestModelInitialization(unittest.TestCase):
         self.assertIn('size_predictions', result)
 
         final_output = result['final_output']
-        self.assertEqual(final_output.shape, (self.batch_size, self.num_classes, 64, 128, 128))
+        self.assertEqual(final_output.shape, (self.batch_size, self.num_classes, 48, 96, 96))
 
         print(f"Decoder final output shape: {final_output.shape}")
         print(f"Number of level outputs: {len(result['level_outputs'])}")
@@ -159,7 +159,7 @@ class TestModelInitialization(unittest.TestCase):
         else:
             final_pred = output
 
-        self.assertEqual(final_pred.shape, (self.batch_size, self.num_classes, 64, 128, 128))
+        self.assertEqual(final_pred.shape, (self.batch_size, self.num_classes, 48, 96, 96))
         print(f"LHA-Net lightweight output shape: {final_pred.shape}")
 
         # Test training mode with deep supervision
@@ -190,7 +190,7 @@ class TestModelInitialization(unittest.TestCase):
         else:
             final_pred = output
 
-        self.assertEqual(final_pred.shape, (self.batch_size, self.num_classes, 64, 128, 128))
+        self.assertEqual(final_pred.shape, (self.batch_size, self.num_classes, 48, 96, 96))
         print(f"LHA-Net standard output shape: {final_pred.shape}")
 
     def test_lha_net_with_auxiliary_loss(self):
@@ -253,7 +253,7 @@ class TestModelInitialization(unittest.TestCase):
         ).to(self.device)
 
         x = torch.randn(self.input_shape, device=self.device, requires_grad=True)
-        target = torch.randint(0, self.num_classes, (self.batch_size, 64, 128, 128), device=self.device)
+        target = torch.randint(0, self.num_classes, (self.batch_size, 48, 96, 96), device=self.device)
 
         model.train()
         output = model(x)

@@ -1,10 +1,12 @@
 import numpy as np
 import nibabel as nib
 import SimpleITK as sitk
-from typing import Tuple, Optional, Dict, Union
+from typing import Tuple, Optional, Dict, Union, List
 import os
 from scipy import ndimage
 from pathlib import Path
+import torch
+from torch.utils.data import Dataset
 
 
 class AMOS22Preprocessor:
@@ -351,3 +353,184 @@ class AMOS22Preprocessor:
         }
 
         return statistics
+
+
+class AMOSDataset(Dataset):
+    """PyTorch Dataset for AMOS22 dataset"""
+
+    def __init__(
+        self,
+        data_root: Union[str, Path],
+        split: str = 'train',
+        patch_size: Tuple[int, int, int] = (64, 128, 128),
+        num_classes: int = 16,
+        augmentation: bool = True,
+        preprocessed_dir: Optional[Union[str, Path]] = None
+    ):
+        """
+        Args:
+            data_root: Root directory of AMOS22 dataset
+            split: Dataset split ('train', 'val', 'test')
+            patch_size: Size of patches to extract [D, H, W]
+            num_classes: Number of segmentation classes
+            augmentation: Whether to apply data augmentation
+            preprocessed_dir: Directory with preprocessed data (optional)
+        """
+        self.data_root = Path(data_root)
+        self.split = split
+        self.patch_size = patch_size
+        self.num_classes = num_classes
+        self.augmentation = augmentation and (split == 'train')
+        self.preprocessed_dir = Path(preprocessed_dir) if preprocessed_dir else None
+
+        # Find all cases
+        self.cases = self._find_cases()
+
+        print(f"Found {len(self.cases)} cases for {split} split")
+
+        # Initialize preprocessor
+        self.preprocessor = AMOS22Preprocessor()
+
+        # Initialize augmentation
+        if self.augmentation:
+            from .augmentation import AMOS22Augmentation
+            self.augmentor = AMOS22Augmentation()
+
+    def _find_cases(self) -> List[Dict[str, Path]]:
+        """Find all image/label pairs"""
+        cases = []
+
+        # Check if using preprocessed data
+        if self.preprocessed_dir and self.preprocessed_dir.exists():
+            # Load from preprocessed directory
+            preprocessed_files = list(self.preprocessed_dir.glob(f"*_image.npy"))
+            for img_file in preprocessed_files:
+                case_id = img_file.stem.replace('_image', '')
+                label_file = self.preprocessed_dir / f"{case_id}_label.npy"
+
+                if label_file.exists():
+                    cases.append({
+                        'case_id': case_id,
+                        'image': img_file,
+                        'label': label_file,
+                        'preprocessed': True
+                    })
+        else:
+            # Load from raw data
+            images_dir = self.data_root / 'imagesTr'
+            labels_dir = self.data_root / 'labelsTr'
+
+            # Alternative paths
+            if not images_dir.exists():
+                images_dir = self.data_root / 'images'
+            if not labels_dir.exists():
+                labels_dir = self.data_root / 'labels'
+
+            if not images_dir.exists():
+                raise FileNotFoundError(f"Images directory not found at {self.data_root}")
+
+            # Find all image files
+            image_files = sorted(list(images_dir.glob('*.nii.gz')) + list(images_dir.glob('*.nii')))
+
+            for img_file in image_files:
+                case_id = img_file.stem.replace('.nii', '')
+
+                # Find corresponding label
+                label_file = labels_dir / f"{case_id}.nii.gz"
+                if not label_file.exists():
+                    label_file = labels_dir / f"{case_id}.nii"
+
+                if label_file.exists():
+                    cases.append({
+                        'case_id': case_id,
+                        'image': img_file,
+                        'label': label_file,
+                        'preprocessed': False
+                    })
+
+        # Split data (simple split for now - can be improved with cross-validation)
+        if self.split == 'train':
+            cases = cases[:int(0.8 * len(cases))]
+        elif self.split == 'val':
+            cases = cases[int(0.8 * len(cases)):]
+
+        return cases
+
+    def _load_case(self, case_info: Dict) -> Tuple[np.ndarray, np.ndarray]:
+        """Load and preprocess a single case"""
+        if case_info['preprocessed']:
+            # Load preprocessed data
+            image = np.load(case_info['image'])
+            label = np.load(case_info['label'])
+        else:
+            # Load and preprocess raw data
+            result = self.preprocessor.preprocess_case(
+                image_path=case_info['image'],
+                label_path=case_info['label']
+            )
+            image = result['image']
+            label = result['label']
+
+        return image, label
+
+    def _extract_patch(self, image: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract a random patch from the volume"""
+        # Get volume shape
+        d, h, w = image.shape
+        pd, ph, pw = self.patch_size
+
+        # If volume is smaller than patch size, pad it
+        if d < pd or h < ph or w < pw:
+            pad_d = max(0, pd - d)
+            pad_h = max(0, ph - h)
+            pad_w = max(0, pw - w)
+
+            image = np.pad(image, ((0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+            label = np.pad(label, ((0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
+
+            d, h, w = image.shape
+
+        # Random crop
+        d_start = np.random.randint(0, max(1, d - pd + 1))
+        h_start = np.random.randint(0, max(1, h - ph + 1))
+        w_start = np.random.randint(0, max(1, w - pw + 1))
+
+        image_patch = image[d_start:d_start+pd, h_start:h_start+ph, w_start:w_start+pw]
+        label_patch = label[d_start:d_start+pd, h_start:h_start+ph, w_start:w_start+pw]
+
+        return image_patch, label_patch
+
+    def __len__(self) -> int:
+        return len(self.cases)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a training sample"""
+        case_info = self.cases[idx]
+
+        # Load case
+        image, label = self._load_case(case_info)
+
+        # Extract patch
+        image_patch, label_patch = self._extract_patch(image, label)
+
+        # Apply augmentation
+        if self.augmentation and hasattr(self, 'augmentor'):
+            # Convert to torch tensors for augmentation
+            image_tensor_aug = torch.from_numpy(image_patch).float()
+            label_tensor_aug = torch.from_numpy(label_patch).long()
+
+            image_tensor_aug, label_tensor_aug = self.augmentor.apply_augmentation(image_tensor_aug, label_tensor_aug)
+
+            # Convert back to numpy
+            image_patch = image_tensor_aug.numpy()
+            label_patch = label_tensor_aug.numpy()
+
+        # Convert to tensors
+        image_tensor = torch.from_numpy(image_patch).unsqueeze(0).float()  # Add channel dimension
+        label_tensor = torch.from_numpy(label_patch).long()
+
+        return {
+            'image': image_tensor,
+            'label': label_tensor,
+            'case_id': case_info['case_id']
+        }
