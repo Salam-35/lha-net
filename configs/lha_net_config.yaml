@@ -65,8 +65,9 @@ training:
     dynamic_batch_sizing: false  # Experimental
 
   # Validation
-  validation_freq: 5  # Validate every N epochs
-  save_freq: 10  # Save checkpoint every N epochs
+  validation_freq: 1  # Validate every N epochs (1 = every epoch)
+  detailed_metrics_freq: 5  # Compute detailed metrics (HD95, NSD) every N epochs (slower)
+  save_freq: 5  # Save checkpoint every N epochs
 
 # Loss function configuration
 loss:

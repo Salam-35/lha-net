@@ -25,7 +25,7 @@ from src.losses.combo_loss import ComboLoss
 from src.training.optimizer import create_optimizer
 from src.training.scheduler import create_scheduler
 from src.training.mixed_precision import MixedPrecisionTraining
-from src.evaluation.metrics import compute_dice_score
+from src.evaluation.metrics import compute_dice_score, SegmentationMetrics
 from src.utils.memory_utils import MemoryMonitor
 
 
@@ -63,7 +63,17 @@ class Trainer:
             init_scale=self.config['training']['mixed_precision']['init_scale']
         )
 
-        # Metrics will be computed inline using compute_dice_score
+        # Initialize comprehensive metrics calculator
+        self.organ_names = [
+            'background', 'liver', 'right_kidney', 'spleen', 'pancreas',
+            'aorta', 'ivc', 'right_adrenal', 'left_adrenal', 'gallbladder',
+            'esophagus', 'stomach', 'duodenum', 'left_kidney', 'class_14', 'class_15'
+        ]
+        self.metrics_calculator = SegmentationMetrics(
+            num_classes=self.config['model']['num_classes'],
+            spacing=tuple(self.config['data']['preprocessing']['target_spacing']),
+            organ_names=self.organ_names
+        )
 
         # Initialize memory monitor
         self.memory_monitor = MemoryMonitor(self.device)
@@ -72,6 +82,12 @@ class Trainer:
         self.current_epoch = 0
         self.best_dice = 0.0
         self.global_step = 0
+
+        # Metrics history storage
+        self.metrics_history = {
+            'train': {'epochs': [], 'losses': [], 'loss_components': []},
+            'val': {'epochs': [], 'losses': [], 'dice_scores': [], 'per_organ_metrics': []}
+        }
 
     def setup_directories(self):
         """Create necessary directories"""
@@ -208,6 +224,15 @@ class Trainer:
         epoch_loss = 0.0
         num_batches = len(self.train_loader)
 
+        # Track loss components
+        loss_components = {
+            'total_loss': 0.0,
+            'focal_loss': 0.0,
+            'dice_loss': 0.0,
+            'size_loss': 0.0,
+            'routing_loss': 0.0
+        }
+
         pbar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch + 1}")
 
         for batch_idx, batch in enumerate(pbar):
@@ -221,10 +246,19 @@ class Trainer:
                 # Calculate loss
                 if isinstance(outputs, dict):
                     loss_dict = self.criterion(outputs['final_prediction'], labels)
-                    loss = loss_dict['total_loss'] if isinstance(loss_dict, dict) else loss_dict
                 else:
                     loss_dict = self.criterion(outputs, labels)
-                    loss = loss_dict['total_loss'] if isinstance(loss_dict, dict) else loss_dict
+
+                # Extract loss components
+                if isinstance(loss_dict, dict):
+                    loss = loss_dict['total_loss']
+                    # Accumulate loss components
+                    for key in loss_components.keys():
+                        if key in loss_dict:
+                            loss_components[key] += loss_dict[key].item() if torch.is_tensor(loss_dict[key]) else loss_dict[key]
+                else:
+                    loss = loss_dict
+                    loss_components['total_loss'] += loss.item()
 
             # Backward pass with gradient scaling
             self.optimizer.zero_grad()
@@ -259,19 +293,41 @@ class Trainer:
                         'gpu_mb': f"{memory_stats.get('gpu_allocated_mb', 0):.0f}"
                     })
 
+        # Average losses
         avg_loss = epoch_loss / num_batches
-        return avg_loss
+        avg_loss_components = {k: v / num_batches for k, v in loss_components.items()}
 
-    def validate(self):
-        """Validate the model"""
+        return avg_loss, avg_loss_components
+
+    def validate(self, compute_detailed_metrics=True):
+        """Validate the model with comprehensive metrics
+
+        Args:
+            compute_detailed_metrics: If True, compute HD95 and NSD (slower).
+                                     If False, only compute Dice scores (faster).
+        """
         self.model.eval()
         val_loss = 0.0
         all_dice_scores = []
 
+        # Comprehensive metrics storage
+        per_organ_dice = {organ: [] for organ in self.organ_names}
+        per_organ_hd95 = {organ: [] for organ in self.organ_names[1:]} if compute_detailed_metrics else {}
+        per_organ_nsd = {organ: [] for organ in self.organ_names[1:]} if compute_detailed_metrics else {}
+
+        # Loss components
+        loss_components = {
+            'total_loss': 0.0,
+            'focal_loss': 0.0,
+            'dice_loss': 0.0,
+            'size_loss': 0.0,
+            'routing_loss': 0.0
+        }
+
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc="Validation")
 
-            for batch in pbar:
+            for batch_idx, batch in enumerate(pbar):
                 images = batch['image'].to(self.device)
                 labels = batch['label'].to(self.device)
 
@@ -285,36 +341,119 @@ class Trainer:
                     predictions = outputs
 
                 # Calculate loss
-                loss = self.criterion(predictions, labels)
+                loss_dict = self.criterion(predictions, labels)
+                if isinstance(loss_dict, dict):
+                    loss = loss_dict['total_loss']
+                    # Accumulate loss components
+                    for key in loss_components.keys():
+                        if key in loss_dict:
+                            loss_components[key] += loss_dict[key].item() if torch.is_tensor(loss_dict[key]) else loss_dict[key]
+                else:
+                    loss = loss_dict
+                    loss_components['total_loss'] += loss.item()
+
                 val_loss += loss.item()
 
-                # Calculate metrics
+                # Calculate comprehensive metrics per sample in batch
                 pred_masks = torch.argmax(predictions, dim=1)
 
-                # Compute Dice score per sample in batch
                 for b in range(pred_masks.shape[0]):
-                    dice = compute_dice_score(pred_masks[b], labels[b], ignore_background=True)
-                    if isinstance(dice, np.ndarray):
-                        all_dice_scores.append(dice.mean())
-                    else:
-                        all_dice_scores.append(dice)
+                    # Compute metrics for this sample
+                    try:
+                        if compute_detailed_metrics:
+                            # Compute all metrics including HD95 and NSD (slower)
+                            metrics = self.metrics_calculator.compute_all_metrics(
+                                pred_masks[b],
+                                labels[b],
+                                case_id=f"val_batch{batch_idx}_sample{b}"
+                            )
+
+                            # Store per-organ dice scores
+                            for organ, dice_val in metrics['dice_scores'].items():
+                                if organ in per_organ_dice:
+                                    per_organ_dice[organ].append(dice_val)
+
+                            # Store HD95 scores
+                            for organ, hd95_val in metrics['hd95_scores'].items():
+                                if organ in per_organ_hd95 and not np.isinf(hd95_val):
+                                    per_organ_hd95[organ].append(hd95_val)
+
+                            # Store NSD scores
+                            for organ, nsd_val in metrics['nsd_scores'].items():
+                                if organ in per_organ_nsd:
+                                    per_organ_nsd[organ].append(nsd_val)
+
+                            # Overall dice (excluding background)
+                            all_dice_scores.append(metrics['mean_dice'])
+                        else:
+                            # Fast mode: Only compute Dice scores (much faster)
+                            # Convert to one-hot for per-class dice computation
+                            pred_one_hot = np.zeros((self.config['model']['num_classes'],) + pred_masks[b].shape, dtype=np.float32)
+                            labels_one_hot = np.zeros((self.config['model']['num_classes'],) + labels[b].shape, dtype=np.float32)
+
+                            for c in range(self.config['model']['num_classes']):
+                                pred_one_hot[c] = (pred_masks[b].cpu().numpy() == c).astype(np.float32)
+                                labels_one_hot[c] = (labels[b].cpu().numpy() == c).astype(np.float32)
+
+                            # Compute per-organ dice
+                            for c, organ in enumerate(self.organ_names):
+                                dice = compute_dice_score(pred_one_hot[c], labels_one_hot[c], ignore_background=False)
+                                per_organ_dice[organ].append(dice)
+
+                            # Overall dice (excluding background)
+                            dice = compute_dice_score(pred_masks[b], labels[b], ignore_background=True)
+                            if isinstance(dice, np.ndarray):
+                                all_dice_scores.append(dice.mean())
+                            else:
+                                all_dice_scores.append(dice)
+
+                    except Exception as e:
+                        # Fallback to simple dice if metrics calculation fails
+                        print(f"Warning: Metrics calculation failed for batch {batch_idx}, sample {b}: {e}")
+                        dice = compute_dice_score(pred_masks[b], labels[b], ignore_background=True)
+                        if isinstance(dice, np.ndarray):
+                            all_dice_scores.append(dice.mean())
+                        else:
+                            all_dice_scores.append(dice)
 
                 pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
+        # Calculate averages
         avg_loss = val_loss / len(self.val_loader)
-        avg_dice = np.mean(all_dice_scores)
+        avg_dice = np.mean(all_dice_scores) if all_dice_scores else 0.0
+        avg_loss_components = {k: v / len(self.val_loader) for k, v in loss_components.items()}
 
-        return avg_loss, avg_dice
+        # Aggregate per-organ metrics
+        organ_metrics = {}
+        for organ in self.organ_names:
+            if organ in per_organ_dice and per_organ_dice[organ]:
+                organ_metrics[organ] = {
+                    'dice_mean': np.mean(per_organ_dice[organ]),
+                    'dice_std': np.std(per_organ_dice[organ])
+                }
 
-    def save_checkpoint(self, is_best=False):
-        """Save model checkpoint"""
+                # Add HD95 and NSD if available (not for background)
+                if organ in per_organ_hd95 and per_organ_hd95[organ]:
+                    organ_metrics[organ]['hd95_mean'] = np.mean(per_organ_hd95[organ])
+                    organ_metrics[organ]['hd95_std'] = np.std(per_organ_hd95[organ])
+
+                if organ in per_organ_nsd and per_organ_nsd[organ]:
+                    organ_metrics[organ]['nsd_mean'] = np.mean(per_organ_nsd[organ])
+                    organ_metrics[organ]['nsd_std'] = np.std(per_organ_nsd[organ])
+
+        return avg_loss, avg_dice, avg_loss_components, organ_metrics
+
+    def save_checkpoint(self, is_best=False, epoch_metrics=None):
+        """Save model checkpoint with comprehensive metrics history"""
         checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'best_dice': self.best_dice,
-            'config': self.config
+            'config': self.config,
+            'metrics_history': self.metrics_history,
+            'current_epoch_metrics': epoch_metrics
         }
 
         # Save latest checkpoint
@@ -328,8 +467,101 @@ class Trainer:
             torch.save(checkpoint, best_path)
             print(f"Saved best checkpoint: {best_path} (Dice: {self.best_dice:.4f})")
 
+    def print_metrics_summary(self, epoch, train_loss, train_loss_components, val_loss=None,
+                             val_dice=None, val_loss_components=None, organ_metrics=None):
+        """Print comprehensive metrics summary"""
+        print("\n" + "="*80)
+        print(f"EPOCH {epoch + 1}/{self.config['training']['num_epochs']} SUMMARY")
+        print("="*80)
+
+        # Training metrics
+        print(f"\nTRAINING METRICS:")
+        print(f"  Total Loss: {train_loss:.4f}")
+        if train_loss_components:
+            print(f"  Loss Components:")
+            for key, value in train_loss_components.items():
+                if value > 0:
+                    print(f"    {key}: {value:.4f}")
+
+        # Validation metrics
+        if val_loss is not None:
+            print(f"\nVALIDATION METRICS:")
+            print(f"  Total Loss: {val_loss:.4f}")
+            print(f"  Mean Dice Score: {val_dice:.4f}")
+
+            if val_loss_components:
+                print(f"  Loss Components:")
+                for key, value in val_loss_components.items():
+                    if value > 0:
+                        print(f"    {key}: {value:.4f}")
+
+            # Per-organ metrics
+            if organ_metrics:
+                print(f"\nPER-ORGAN METRICS:")
+                print(f"  {'Organ':<20} {'Dice':<12} {'HD95 (mm)':<15} {'NSD':<12}")
+                print(f"  {'-'*20} {'-'*12} {'-'*15} {'-'*12}")
+
+                for organ, metrics in organ_metrics.items():
+                    if organ == 'background':
+                        continue
+
+                    dice_str = f"{metrics['dice_mean']:.4f}±{metrics['dice_std']:.4f}"
+                    hd95_str = f"{metrics['hd95_mean']:.2f}±{metrics['hd95_std']:.2f}" if 'hd95_mean' in metrics else "N/A"
+                    nsd_str = f"{metrics['nsd_mean']:.4f}±{metrics['nsd_std']:.4f}" if 'nsd_mean' in metrics else "N/A"
+
+                    print(f"  {organ:<20} {dice_str:<12} {hd95_str:<15} {nsd_str:<12}")
+
+        # Learning rate
+        current_lr = self.optimizer.param_groups[0]['lr']
+        print(f"\nLearning Rate: {current_lr:.6f}")
+        print("="*80 + "\n")
+
+    def print_training_summary(self):
+        """Print final training summary with metrics history"""
+        print("\n" + "="*80)
+        print("TRAINING SUMMARY")
+        print("="*80)
+
+        # Training progression
+        if self.metrics_history['train']['epochs']:
+            print("\nTraining Loss Progression:")
+            for i, epoch in enumerate(self.metrics_history['train']['epochs']):
+                loss = self.metrics_history['train']['losses'][i]
+                print(f"  Epoch {epoch}: {loss:.4f}")
+
+        # Validation progression
+        if self.metrics_history['val']['epochs']:
+            print("\nValidation Metrics Progression:")
+            for i, epoch in enumerate(self.metrics_history['val']['epochs']):
+                val_loss = self.metrics_history['val']['losses'][i]
+                val_dice = self.metrics_history['val']['dice_scores'][i]
+                print(f"  Epoch {epoch}: Loss={val_loss:.4f}, Dice={val_dice:.4f}")
+
+        # Best performance
+        if self.metrics_history['val']['dice_scores']:
+            best_epoch_idx = np.argmax(self.metrics_history['val']['dice_scores'])
+            best_epoch = self.metrics_history['val']['epochs'][best_epoch_idx]
+            best_dice = self.metrics_history['val']['dice_scores'][best_epoch_idx]
+            best_organ_metrics = self.metrics_history['val']['per_organ_metrics'][best_epoch_idx]
+
+            print(f"\nBest Performance (Epoch {best_epoch}):")
+            print(f"  Mean Dice Score: {best_dice:.4f}")
+
+            if best_organ_metrics:
+                print(f"\n  Best Per-Organ Dice Scores:")
+                sorted_organs = sorted(best_organ_metrics.items(),
+                                      key=lambda x: x[1].get('dice_mean', 0),
+                                      reverse=True)
+                for organ, metrics in sorted_organs:
+                    if organ != 'background':
+                        dice_mean = metrics.get('dice_mean', 0)
+                        dice_std = metrics.get('dice_std', 0)
+                        print(f"    {organ:<20}: {dice_mean:.4f}±{dice_std:.4f}")
+
+        print("="*80)
+
     def train(self):
-        """Main training loop"""
+        """Main training loop with comprehensive metrics tracking"""
         print("\n" + "="*50)
         print("Starting Training")
         print("="*50)
@@ -342,32 +574,77 @@ class Trainer:
             self.current_epoch = epoch
 
             # Train epoch
-            train_loss = self.train_epoch()
+            train_loss, train_loss_components = self.train_epoch()
+
+            # Store training metrics
+            self.metrics_history['train']['epochs'].append(epoch + 1)
+            self.metrics_history['train']['losses'].append(train_loss)
+            self.metrics_history['train']['loss_components'].append(train_loss_components)
 
             # Update learning rate
             if self.scheduler:
                 self.scheduler.step()
-                current_lr = self.optimizer.param_groups[0]['lr']
-            else:
-                current_lr = self.config['training']['learning_rate']
-
-            print(f"\nEpoch {epoch + 1}/{self.config['training']['num_epochs']}")
-            print(f"Train Loss: {train_loss:.4f}, LR: {current_lr:.6f}")
 
             # Validation
+            val_loss = None
+            val_dice = None
+            val_loss_components = None
+            organ_metrics = None
+
             if (epoch + 1) % self.config['training']['validation_freq'] == 0:
-                val_loss, val_dice = self.validate()
-                print(f"Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}")
+                # Check if we should compute detailed metrics (HD95, NSD) this epoch
+                detailed_freq = self.config['training'].get('detailed_metrics_freq', 5)
+                compute_detailed = (epoch + 1) % detailed_freq == 0
+
+                if not compute_detailed:
+                    print("Running fast validation (Dice only)...")
+                else:
+                    print("Running detailed validation (Dice + HD95 + NSD)...")
+
+                val_loss, val_dice, val_loss_components, organ_metrics = self.validate(
+                    compute_detailed_metrics=compute_detailed
+                )
+
+                # Store validation metrics
+                self.metrics_history['val']['epochs'].append(epoch + 1)
+                self.metrics_history['val']['losses'].append(val_loss)
+                self.metrics_history['val']['dice_scores'].append(val_dice)
+                self.metrics_history['val']['per_organ_metrics'].append(organ_metrics)
 
                 # Save best model
                 is_best = val_dice > self.best_dice
                 if is_best:
                     self.best_dice = val_dice
-                    self.save_checkpoint(is_best=True)
+
+                # Prepare epoch metrics for checkpoint
+                epoch_metrics = {
+                    'epoch': epoch + 1,
+                    'train_loss': train_loss,
+                    'train_loss_components': train_loss_components,
+                    'val_loss': val_loss,
+                    'val_dice': val_dice,
+                    'val_loss_components': val_loss_components,
+                    'organ_metrics': organ_metrics
+                }
+
+                # Save checkpoint with metrics
+                if is_best:
+                    self.save_checkpoint(is_best=True, epoch_metrics=epoch_metrics)
+
+            # Print comprehensive metrics summary
+            self.print_metrics_summary(
+                epoch, train_loss, train_loss_components,
+                val_loss, val_dice, val_loss_components, organ_metrics
+            )
 
             # Save checkpoint periodically
             if (epoch + 1) % self.config['training']['save_freq'] == 0:
-                self.save_checkpoint()
+                epoch_metrics = {
+                    'epoch': epoch + 1,
+                    'train_loss': train_loss,
+                    'train_loss_components': train_loss_components,
+                }
+                self.save_checkpoint(epoch_metrics=epoch_metrics)
 
             # Clear GPU cache periodically
             if torch.cuda.is_available() and (epoch + 1) % self.config['training']['memory_optimization']['empty_cache_freq'] == 0:
@@ -377,6 +654,9 @@ class Trainer:
         print("Training Completed!")
         print(f"Best Dice Score: {self.best_dice:.4f}")
         print("="*50)
+
+        # Print final summary
+        self.print_training_summary()
 
 
 def main():
