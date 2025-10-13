@@ -432,14 +432,21 @@ class Trainer:
                     'dice_std': np.std(per_organ_dice[organ])
                 }
 
-                # Add HD95 and NSD if available (not for background)
+                # Add HD95 if available (not for background)
                 if organ in per_organ_hd95 and per_organ_hd95[organ]:
-                    organ_metrics[organ]['hd95_mean'] = np.mean(per_organ_hd95[organ])
-                    organ_metrics[organ]['hd95_std'] = np.std(per_organ_hd95[organ])
+                    # Filter out nan values
+                    valid_hd95 = [v for v in per_organ_hd95[organ] if not np.isnan(v)]
+                    if valid_hd95:
+                        organ_metrics[organ]['hd95_mean'] = np.mean(valid_hd95)
+                        organ_metrics[organ]['hd95_std'] = np.std(valid_hd95)
 
+                # Add NSD if available (not for background)
                 if organ in per_organ_nsd and per_organ_nsd[organ]:
-                    organ_metrics[organ]['nsd_mean'] = np.mean(per_organ_nsd[organ])
-                    organ_metrics[organ]['nsd_std'] = np.std(per_organ_nsd[organ])
+                    # Filter out nan values
+                    valid_nsd = [v for v in per_organ_nsd[organ] if not np.isnan(v)]
+                    if valid_nsd:
+                        organ_metrics[organ]['nsd_mean'] = np.mean(valid_nsd)
+                        organ_metrics[organ]['nsd_std'] = np.std(valid_nsd)
 
         return avg_loss, avg_dice, avg_loss_components, organ_metrics
 
@@ -506,8 +513,18 @@ class Trainer:
                         continue
 
                     dice_str = f"{metrics['dice_mean']:.4f}±{metrics['dice_std']:.4f}"
-                    hd95_str = f"{metrics['hd95_mean']:.2f}±{metrics['hd95_std']:.2f}" if 'hd95_mean' in metrics else "N/A"
-                    nsd_str = f"{metrics['nsd_mean']:.4f}±{metrics['nsd_std']:.4f}" if 'nsd_mean' in metrics else "N/A"
+
+                    # Handle HD95 with nan values
+                    if 'hd95_mean' in metrics and not np.isnan(metrics['hd95_mean']):
+                        hd95_str = f"{metrics['hd95_mean']:.2f}±{metrics['hd95_std']:.2f}"
+                    else:
+                        hd95_str = "N/A"
+
+                    # Handle NSD with nan values
+                    if 'nsd_mean' in metrics and not np.isnan(metrics['nsd_mean']):
+                        nsd_str = f"{metrics['nsd_mean']:.4f}±{metrics['nsd_std']:.4f}"
+                    else:
+                        nsd_str = "N/A"
 
                     print(f"  {organ:<20} {dice_str:<12} {hd95_str:<15} {nsd_str:<12}")
 

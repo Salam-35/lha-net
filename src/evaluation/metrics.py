@@ -16,13 +16,13 @@ def compute_dice_score(
     Compute Dice coefficient
 
     Args:
-        pred: Predicted segmentation (H, W, D) or (C, H, W, D)
-        target: Ground truth segmentation (H, W, D) or (C, H, W, D)
+        pred: Predicted segmentation (H, W, D) or (C, H, W, D) - can be class indices or one-hot
+        target: Ground truth segmentation (H, W, D) or (C, H, W, D) - can be class indices or one-hot
         smooth: Smoothing factor to avoid division by zero
         ignore_background: Whether to ignore background class (class 0)
 
     Returns:
-        Dice score(s)
+        Dice score(s) - always in range [0, 1]
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -33,7 +33,7 @@ def compute_dice_score(
     assert pred.shape == target.shape, f"Shape mismatch: {pred.shape} vs {target.shape}"
 
     # If multi-class, compute per-class Dice
-    if len(pred.shape) == 4:  # (C, H, W, D)
+    if len(pred.shape) == 4:  # (C, H, W, D) - one-hot encoded
         dice_scores = []
         start_idx = 1 if ignore_background else 0
 
@@ -44,16 +44,36 @@ def compute_dice_score(
             intersection = np.sum(pred_c * target_c)
             union = np.sum(pred_c) + np.sum(target_c)
 
-            dice = (2.0 * intersection + smooth) / (union + smooth)
+            if union == 0:
+                # Both pred and target are empty for this class
+                dice = 1.0 if intersection == 0 else 0.0
+            else:
+                dice = (2.0 * intersection + smooth) / (union + smooth)
+
+            # Clamp to [0, 1] range
+            dice = np.clip(dice, 0.0, 1.0)
             dice_scores.append(dice)
 
-        return np.array(dice_scores)
+        return np.mean(dice_scores) if dice_scores else 0.0
 
-    else:  # Single class (H, W, D)
+    else:  # Single class (H, W, D) - binary mask or class indices
+        # If it looks like class indices (integer values), binarize it
+        if pred.dtype in [np.int32, np.int64, np.uint8] and len(np.unique(pred)) > 2:
+            # This is class indices, not binary mask - shouldn't use this function directly
+            warnings.warn("compute_dice_score received class indices instead of binary mask. Converting to binary.")
+            pred = (pred > 0).astype(np.float32)
+            target = (target > 0).astype(np.float32)
+
         intersection = np.sum(pred * target)
         union = np.sum(pred) + np.sum(target)
 
-        return (2.0 * intersection + smooth) / (union + smooth)
+        if union == 0:
+            dice = 1.0 if intersection == 0 else 0.0
+        else:
+            dice = (2.0 * intersection + smooth) / (union + smooth)
+
+        # Clamp to [0, 1] range
+        return np.clip(dice, 0.0, 1.0)
 
 
 def compute_hausdorff_distance(
@@ -72,7 +92,7 @@ def compute_hausdorff_distance(
         percentile: Percentile for robust Hausdorff distance
 
     Returns:
-        Hausdorff distance in mm
+        Hausdorff distance in mm (returns np.nan if cannot be computed)
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -83,23 +103,38 @@ def compute_hausdorff_distance(
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
+    # Check if both masks are empty
+    if np.sum(pred) == 0 and np.sum(target) == 0:
+        return np.nan  # Both empty, HD is undefined but not an error
+
+    # Check if one mask is empty
+    if np.sum(pred) == 0 or np.sum(target) == 0:
+        return np.nan  # One empty, HD is undefined
+
     # Find surface points
     pred_surface = _extract_surface_points(pred, spacing)
     target_surface = _extract_surface_points(target, spacing)
 
     if len(pred_surface) == 0 or len(target_surface) == 0:
-        return float('inf')
+        return np.nan
 
     # Compute distances
-    distances_1 = [np.min([np.linalg.norm(p - t) for t in target_surface]) for p in pred_surface]
-    distances_2 = [np.min([np.linalg.norm(t - p) for p in pred_surface]) for t in target_surface]
+    try:
+        distances_1 = [np.min([np.linalg.norm(p - t) for t in target_surface]) for p in pred_surface]
+        distances_2 = [np.min([np.linalg.norm(t - p) for p in pred_surface]) for t in target_surface]
 
-    all_distances = distances_1 + distances_2
+        all_distances = distances_1 + distances_2
 
-    if percentile == 100.0:
-        return np.max(all_distances)
-    else:
-        return np.percentile(all_distances, percentile)
+        if not all_distances:
+            return np.nan
+
+        if percentile == 100.0:
+            return float(np.max(all_distances))
+        else:
+            return float(np.percentile(all_distances, percentile))
+    except Exception as e:
+        warnings.warn(f"HD95 computation failed: {e}")
+        return np.nan
 
 
 def _extract_surface_points(mask: np.ndarray, spacing: Tuple[float, float, float]) -> List[np.ndarray]:
@@ -143,7 +178,7 @@ def compute_normalized_surface_distance(
         tolerance: Tolerance threshold in mm
 
     Returns:
-        NSD score (0-1, higher is better)
+        NSD score (0-1, higher is better), or np.nan if cannot be computed
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -154,35 +189,47 @@ def compute_normalized_surface_distance(
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
+    # Check if both masks are empty
+    if np.sum(pred) == 0 and np.sum(target) == 0:
+        return np.nan  # Both empty, NSD is undefined
+
+    # Check if one mask is empty
+    if np.sum(pred) == 0 or np.sum(target) == 0:
+        return 0.0  # One empty, no match
+
     # Extract surface points
     pred_surface = _extract_surface_points(pred, spacing)
     target_surface = _extract_surface_points(target, spacing)
 
     if len(pred_surface) == 0 and len(target_surface) == 0:
-        return 1.0  # Perfect match if both are empty
+        return np.nan  # No surface found
 
     if len(pred_surface) == 0 or len(target_surface) == 0:
-        return 0.0  # No match if one is empty
+        return 0.0  # No match if one has no surface
 
-    # Compute surface distances
-    distances_pred_to_target = []
-    for p in pred_surface:
-        min_dist = min([np.linalg.norm(p - t) for t in target_surface])
-        distances_pred_to_target.append(min_dist)
+    try:
+        # Compute surface distances
+        distances_pred_to_target = []
+        for p in pred_surface:
+            min_dist = min([np.linalg.norm(p - t) for t in target_surface])
+            distances_pred_to_target.append(min_dist)
 
-    distances_target_to_pred = []
-    for t in target_surface:
-        min_dist = min([np.linalg.norm(t - p) for p in pred_surface])
-        distances_target_to_pred.append(min_dist)
+        distances_target_to_pred = []
+        for t in target_surface:
+            min_dist = min([np.linalg.norm(t - p) for p in pred_surface])
+            distances_target_to_pred.append(min_dist)
 
-    # Count points within tolerance
-    pred_within_tolerance = sum([d <= tolerance for d in distances_pred_to_target])
-    target_within_tolerance = sum([d <= tolerance for d in distances_target_to_pred])
+        # Count points within tolerance
+        pred_within_tolerance = sum([d <= tolerance for d in distances_pred_to_target])
+        target_within_tolerance = sum([d <= tolerance for d in distances_target_to_pred])
 
-    total_surface_points = len(pred_surface) + len(target_surface)
-    total_within_tolerance = pred_within_tolerance + target_within_tolerance
+        total_surface_points = len(pred_surface) + len(target_surface)
+        total_within_tolerance = pred_within_tolerance + target_within_tolerance
 
-    return total_within_tolerance / total_surface_points
+        return float(total_within_tolerance / total_surface_points)
+    except Exception as e:
+        warnings.warn(f"NSD computation failed: {e}")
+        return np.nan
 
 
 class SegmentationMetrics:
@@ -276,45 +323,63 @@ class SegmentationMetrics:
         # 3. Hausdorff distances
         hd95_scores = {}
         for class_idx in range(1, self.num_classes):  # Skip background
-            try:
-                hd95 = compute_hausdorff_distance(
-                    pred_one_hot[class_idx],
-                    target_one_hot[class_idx],
-                    self.spacing,
-                    percentile=95.0
-                )
-                hd95_scores[self.organ_names[class_idx]] = hd95
-            except Exception as e:
-                hd95_scores[self.organ_names[class_idx]] = float('inf')
+            if class_idx < len(self.organ_names):
+                try:
+                    hd95 = compute_hausdorff_distance(
+                        pred_one_hot[class_idx],
+                        target_one_hot[class_idx],
+                        self.spacing,
+                        percentile=95.0
+                    )
+                    hd95_scores[self.organ_names[class_idx]] = hd95
+                except Exception as e:
+                    hd95_scores[self.organ_names[class_idx]] = np.nan
 
         metrics['hd95_scores'] = hd95_scores
-        valid_hd95 = [v for v in hd95_scores.values() if not np.isinf(v)]
-        metrics['mean_hd95'] = np.mean(valid_hd95) if valid_hd95 else float('inf')
+        valid_hd95 = [v for v in hd95_scores.values() if not np.isnan(v) and not np.isinf(v)]
+        metrics['mean_hd95'] = np.mean(valid_hd95) if valid_hd95 else np.nan
 
         # 4. Normalized Surface Distance
         nsd_scores = {}
         for class_idx in range(1, self.num_classes):
-            try:
-                nsd = compute_normalized_surface_distance(
-                    pred_one_hot[class_idx],
-                    target_one_hot[class_idx],
-                    self.spacing,
-                    tolerance=1.0
-                )
-                nsd_scores[self.organ_names[class_idx]] = nsd
-            except Exception:
-                nsd_scores[self.organ_names[class_idx]] = 0.0
+            if class_idx < len(self.organ_names):
+                try:
+                    nsd = compute_normalized_surface_distance(
+                        pred_one_hot[class_idx],
+                        target_one_hot[class_idx],
+                        self.spacing,
+                        tolerance=1.0
+                    )
+                    nsd_scores[self.organ_names[class_idx]] = nsd
+                except Exception:
+                    nsd_scores[self.organ_names[class_idx]] = np.nan
 
         metrics['nsd_scores'] = nsd_scores
-        metrics['mean_nsd'] = np.mean(list(nsd_scores.values()))
+        valid_nsd = [v for v in nsd_scores.values() if not np.isnan(v)]
+        metrics['mean_nsd'] = np.mean(valid_nsd) if valid_nsd else np.nan
 
         # 5. Volume metrics
         volume_metrics = self._compute_volume_metrics(pred_one_hot, target_one_hot)
         metrics['volume_metrics'] = volume_metrics
 
-        # 6. Summary metrics
+        # 6. Volume similarity scores
+        volume_similarity_scores = {}
+        for class_idx in range(1, self.num_classes):
+            if class_idx < len(self.organ_names):
+                organ_name = self.organ_names[class_idx]
+                if organ_name in volume_metrics:
+                    rve = volume_metrics[organ_name]['relative_volume_error']
+                    # Volume similarity: 1 - relative_volume_error (clamped to [0,1])
+                    vs = max(0.0, 1.0 - rve)
+                    volume_similarity_scores[organ_name] = vs
+                else:
+                    volume_similarity_scores[organ_name] = np.nan
+
+        metrics['volume_similarity_scores'] = volume_similarity_scores
+
+        # 7. Summary metrics
         metrics['case_id'] = case_id
-        metrics['timestamp'] = np.datetime64('now').astype(str)
+        metrics['median_dice'] = np.median([dice_scores[i] for i in range(1, len(dice_scores))])
 
         return metrics
 
