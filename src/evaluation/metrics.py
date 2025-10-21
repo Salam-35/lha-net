@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
 from scipy import ndimage
-from scipy.spatial.distance import directed_hausdorff
 import warnings
 
 
@@ -32,7 +31,7 @@ def compute_dice_score(
     # Ensure same shape
     assert pred.shape == target.shape, f"Shape mismatch: {pred.shape} vs {target.shape}"
 
-    # If multi-class, compute per-class Dice
+    # If multi-class, compute per-class Dice and return per-class scores
     if len(pred.shape) == 4:  # (C, H, W, D) - one-hot encoded
         dice_scores = []
         start_idx = 1 if ignore_background else 0
@@ -54,7 +53,7 @@ def compute_dice_score(
             dice = np.clip(dice, 0.0, 1.0)
             dice_scores.append(dice)
 
-        return np.mean(dice_scores) if dice_scores else 0.0
+        return np.array(dice_scores, dtype=np.float32)
 
     else:  # Single class (H, W, D) - binary mask or class indices
         # If it looks like class indices (integer values), binarize it
@@ -92,7 +91,7 @@ def compute_hausdorff_distance(
         percentile: Percentile for robust Hausdorff distance
 
     Returns:
-        Hausdorff distance in mm (returns np.nan if cannot be computed)
+        Hausdorff distance in mm (finite scalar)
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -103,20 +102,24 @@ def compute_hausdorff_distance(
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
-    # Check if both masks are empty
-    if np.sum(pred) == 0 and np.sum(target) == 0:
-        return np.nan  # Both empty, HD is undefined but not an error
+    # Precompute a conservative max possible distance for the volume
+    # Use spatial diagonal length (in mm) as a finite stand-in for "worst-case" distance
+    vol_diag_mm = float(np.linalg.norm(np.array(pred.shape) * np.array(spacing)))
 
-    # Check if one mask is empty
+    # Check if both masks are empty -> define distance as 0 (no discrepancy)
+    if np.sum(pred) == 0 and np.sum(target) == 0:
+        return 0.0
+
+    # Check if one mask is empty -> define a large finite distance (volume diagonal)
     if np.sum(pred) == 0 or np.sum(target) == 0:
-        return np.nan  # One empty, HD is undefined
+        return vol_diag_mm
 
     # Find surface points
     pred_surface = _extract_surface_points(pred, spacing)
     target_surface = _extract_surface_points(target, spacing)
 
     if len(pred_surface) == 0 or len(target_surface) == 0:
-        return np.nan
+        return vol_diag_mm
 
     # Compute distances
     try:
@@ -126,7 +129,7 @@ def compute_hausdorff_distance(
         all_distances = distances_1 + distances_2
 
         if not all_distances:
-            return np.nan
+            return vol_diag_mm
 
         if percentile == 100.0:
             return float(np.max(all_distances))
@@ -134,7 +137,7 @@ def compute_hausdorff_distance(
             return float(np.percentile(all_distances, percentile))
     except Exception as e:
         warnings.warn(f"HD95 computation failed: {e}")
-        return np.nan
+        return vol_diag_mm
 
 
 def _extract_surface_points(mask: np.ndarray, spacing: Tuple[float, float, float]) -> List[np.ndarray]:
@@ -178,7 +181,7 @@ def compute_normalized_surface_distance(
         tolerance: Tolerance threshold in mm
 
     Returns:
-        NSD score (0-1, higher is better), or np.nan if cannot be computed
+        NSD score (0-1, higher is better)
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
@@ -189,9 +192,9 @@ def compute_normalized_surface_distance(
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
-    # Check if both masks are empty
+    # Check if both masks are empty -> perfect agreement
     if np.sum(pred) == 0 and np.sum(target) == 0:
-        return np.nan  # Both empty, NSD is undefined
+        return 1.0
 
     # Check if one mask is empty
     if np.sum(pred) == 0 or np.sum(target) == 0:
@@ -202,7 +205,7 @@ def compute_normalized_surface_distance(
     target_surface = _extract_surface_points(target, spacing)
 
     if len(pred_surface) == 0 and len(target_surface) == 0:
-        return np.nan  # No surface found
+        return 1.0  # No surface found, but masks equal (both non-empty solids unlikely)
 
     if len(pred_surface) == 0 or len(target_surface) == 0:
         return 0.0  # No match if one has no surface
@@ -229,7 +232,7 @@ def compute_normalized_surface_distance(
         return float(total_within_tolerance / total_surface_points)
     except Exception as e:
         warnings.warn(f"NSD computation failed: {e}")
-        return np.nan
+        return 0.0
 
 
 class SegmentationMetrics:

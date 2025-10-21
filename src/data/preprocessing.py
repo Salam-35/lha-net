@@ -416,11 +416,33 @@ class AMOSDataset(Dataset):
                         'preprocessed': True
                     })
         else:
-            # Load from raw data
-            images_dir = self.data_root / 'imagesTr'
-            labels_dir = self.data_root / 'labelsTr'
+            # Load from raw data with explicit split folder support
+            # Prefer split-specific folders if present; otherwise fall back to imagesTr/labelsTr and split later
+            explicit_split = False
 
-            # Alternative paths
+            split_to_dirs = {
+                'train': ('imagesTr', 'labelsTr'),
+                'val': ('imagesVal', 'labelsVal'),
+                'test': ('imagesTs', 'labelsTs'),
+            }
+
+            if self.split in split_to_dirs:
+                img_dir_name, lbl_dir_name = split_to_dirs[self.split]
+                images_dir = self.data_root / img_dir_name
+                labels_dir = self.data_root / lbl_dir_name
+
+                if images_dir.exists():
+                    explicit_split = True
+                else:
+                    # Fall back to combined folders
+                    images_dir = self.data_root / 'imagesTr'
+                    labels_dir = self.data_root / 'labelsTr'
+
+            else:
+                images_dir = self.data_root / 'imagesTr'
+                labels_dir = self.data_root / 'labelsTr'
+
+            # Alternative generic paths fallback
             if not images_dir.exists():
                 images_dir = self.data_root / 'images'
             if not labels_dir.exists():
@@ -435,12 +457,20 @@ class AMOSDataset(Dataset):
             for img_file in image_files:
                 case_id = img_file.stem.replace('.nii', '')
 
-                # Find corresponding label
+                # Find corresponding label (may be missing for test)
                 label_file = labels_dir / f"{case_id}.nii.gz"
                 if not label_file.exists():
                     label_file = labels_dir / f"{case_id}.nii"
 
-                if label_file.exists():
+                if self.split == 'test' and not label_file.exists():
+                    # Allow unlabeled test data
+                    cases.append({
+                        'case_id': case_id,
+                        'image': img_file,
+                        'label': None,
+                        'preprocessed': False
+                    })
+                elif label_file.exists():
                     cases.append({
                         'case_id': case_id,
                         'image': img_file,
@@ -448,11 +478,18 @@ class AMOSDataset(Dataset):
                         'preprocessed': False
                     })
 
-        # Split data (simple split for now - can be improved with cross-validation)
-        if self.split == 'train':
-            cases = cases[:int(0.8 * len(cases))]
-        elif self.split == 'val':
-            cases = cases[int(0.8 * len(cases)):]
+        # Split data only if using combined folders and no explicit split dirs are present
+        if not self.preprocessed_dir:
+            # Determine if we used explicit split dirs; if not, perform 80/20 split
+            # Heuristic: if split requested is 'train' or 'val' and imagesVal exists, we already partitioned
+            images_val_dir = self.data_root / 'imagesVal'
+            used_explicit = images_val_dir.exists() or (self.data_root / 'imagesTs').exists()
+
+            if not used_explicit:
+                if self.split == 'train':
+                    cases = cases[:int(0.8 * len(cases))]
+                elif self.split == 'val':
+                    cases = cases[int(0.8 * len(cases)):]
 
         return cases
 
@@ -469,7 +506,11 @@ class AMOSDataset(Dataset):
                 label_path=case_info['label']
             )
             image = result['image']
-            label = result['label']
+            label = result.get('label', None)
+
+        if label is None:
+            # For test split without labels, return a dummy label of zeros for compatibility
+            label = np.zeros_like(image, dtype=np.uint8)
 
         return image, label
 

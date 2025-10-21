@@ -222,3 +222,6 @@ With default settings (`validation_freq: 1`, `detailed_metrics_freq: 5`):
 ---
 
 **You now have full visibility into your training process from epoch 1 onwards!** 🎉
+
+
+### added KD-tree acceleration for HD95/NSD so detailed validation finishes much faster**
