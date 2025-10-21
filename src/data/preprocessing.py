@@ -26,6 +26,9 @@ class AMOS22Preprocessor:
         self.clip_range = clip_range
         self.resampling_method = resampling_method
 
+        # MRI defaults (used when modality == 'MRI')
+        self.mri_percentiles = (1.0, 99.0)
+
     def _load_image(self, image_path: Union[str, Path]) -> Tuple[np.ndarray, Dict]:
         """Load medical image and extract metadata"""
         if str(image_path).endswith('.nii.gz') or str(image_path).endswith('.nii'):
@@ -88,43 +91,101 @@ class AMOS22Preprocessor:
 
         return resampled
 
-    def _normalize_intensity(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
-        """Normalize image intensity"""
-        # Clip values
-        image = np.clip(image, self.clip_range[0], self.clip_range[1])
+    def _detect_modality(
+        self,
+        image: np.ndarray,
+        image_path: Optional[Union[str, Path]] = None,
+        metadata: Optional[Dict] = None
+    ) -> str:
+        """Heuristically detect modality (CT or MRI)."""
+        img_min = float(np.nanmin(image))
+        img_max = float(np.nanmax(image))
 
-        if self.intensity_normalization == "z_score":
-            if mask is not None:
-                # Compute statistics only within the mask (e.g., body region)
-                masked_values = image[mask > 0]
-                if len(masked_values) > 0:
-                    mean_val = np.mean(masked_values)
-                    std_val = np.std(masked_values)
+        # File path hints
+        hint = None
+        if image_path is not None:
+            lp = str(image_path).lower()
+            if 'ct' in lp:
+                hint = 'CT'
+            elif 'mr' in lp or 'mri' in lp:
+                hint = 'MRI'
+
+        # Intensity heuristics
+        # CT often has HU below -200 and can span beyond 1000
+        frac_below_m200 = float((image < -200).mean()) if image.size > 0 else 0.0
+        likely_ct = (img_min < -500) or (img_min < 0 and img_max > 1000) or (frac_below_m200 > 0.001)
+
+        if hint == 'CT':
+            return 'CT'
+        if hint == 'MRI':
+            return 'MRI'
+        return 'CT' if likely_ct else 'MRI'
+
+    def _normalize_intensity(
+        self,
+        image: np.ndarray,
+        modality: str,
+        mask: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Normalize image intensity using modality-aware logic."""
+        if modality == 'CT':
+            # CT: clip to HU window then z-score (prefer masked stats)
+            image = np.clip(image, self.clip_range[0], self.clip_range[1])
+
+            if self.intensity_normalization == "z_score":
+                if mask is not None:
+                    masked_values = image[mask > 0]
+                    if masked_values.size > 0:
+                        mean_val = float(np.mean(masked_values))
+                        std_val = float(np.std(masked_values))
+                    else:
+                        mean_val = float(np.mean(image))
+                        std_val = float(np.std(image))
                 else:
-                    mean_val = np.mean(image)
-                    std_val = np.std(image)
+                    mean_val = float(np.mean(image))
+                    std_val = float(np.std(image))
+
+                if std_val > 0:
+                    image = (image - mean_val) / std_val
+                else:
+                    image = image - mean_val
+
+            elif self.intensity_normalization == "min_max":
+                min_val = float(np.min(image))
+                max_val = float(np.max(image))
+                if max_val > min_val:
+                    image = (image - min_val) / (max_val - min_val)
+
+            elif self.intensity_normalization == "percentile":
+                p1 = float(np.percentile(image, 1))
+                p99 = float(np.percentile(image, 99))
+                image = np.clip(image, p1, p99)
+                if p99 > p1:
+                    image = (image - p1) / (p99 - p1)
+
+        else:
+            # MRI: robust percentile clip then z-score (optionally within mask)
+            p_low, p_high = self.mri_percentiles
+            p1 = float(np.percentile(image, p_low))
+            p99 = float(np.percentile(image, p_high))
+            image = np.clip(image, p1, p99)
+
+            if mask is not None:
+                masked_values = image[mask > 0]
+                if masked_values.size > 0:
+                    mean_val = float(np.mean(masked_values))
+                    std_val = float(np.std(masked_values))
+                else:
+                    mean_val = float(np.mean(image))
+                    std_val = float(np.std(image))
             else:
-                mean_val = np.mean(image)
-                std_val = np.std(image)
+                mean_val = float(np.mean(image))
+                std_val = float(np.std(image))
 
             if std_val > 0:
                 image = (image - mean_val) / std_val
             else:
                 image = image - mean_val
-
-        elif self.intensity_normalization == "min_max":
-            min_val = np.min(image)
-            max_val = np.max(image)
-            if max_val > min_val:
-                image = (image - min_val) / (max_val - min_val)
-
-        elif self.intensity_normalization == "percentile":
-            # Use 1st and 99th percentiles for robust normalization
-            p1 = np.percentile(image, 1)
-            p99 = np.percentile(image, 99)
-            image = np.clip(image, p1, p99)
-            if p99 > p1:
-                image = (image - p1) / (p99 - p1)
 
         return image.astype(np.float32)
 
@@ -141,17 +202,38 @@ class AMOS22Preprocessor:
 
         return resized
 
-    def _create_body_mask(self, image: np.ndarray, threshold: float = -500) -> np.ndarray:
-        """Create a simple body mask for more accurate normalization"""
-        # Simple threshold-based body mask
-        body_mask = image > threshold
+    def _otsu_threshold(self, image: np.ndarray, nbins: int = 256) -> float:
+        """Compute Otsu threshold for MRI body mask (simple implementation)."""
+        # Use a robust range to avoid extreme tails
+        lo = np.percentile(image, 0.5)
+        hi = np.percentile(image, 99.5)
+        if hi <= lo:
+            return float(np.median(image))
 
-        # Remove small connected components
+        hist, bin_edges = np.histogram(np.clip(image, lo, hi), bins=nbins, range=(lo, hi))
+        hist = hist.astype(np.float64)
+        prob = hist / (hist.sum() + 1e-8)
+        omega = np.cumsum(prob)
+        mu = np.cumsum(prob * (bin_edges[:-1] + bin_edges[1:]) / 2.0)
+        mu_t = mu[-1]
+
+        sigma_b_squared = (mu_t * omega - mu) ** 2 / (omega * (1.0 - omega) + 1e-8)
+        idx = int(np.nanargmax(sigma_b_squared))
+        return float((bin_edges[idx] + bin_edges[idx + 1]) / 2.0)
+
+    def _create_body_mask(self, image: np.ndarray, modality: str, ct_threshold: float = -500) -> np.ndarray:
+        """Create a body mask; CT and MRI use different approaches."""
+        if modality == 'CT':
+            body_mask = image > ct_threshold
+        else:
+            # MRI: threshold using Otsu on a smoothed image
+            smoothed = ndimage.gaussian_filter(image, sigma=1.0)
+            thr = self._otsu_threshold(smoothed)
+            body_mask = smoothed > thr
+
+        # Morphological cleanup
         body_mask = ndimage.binary_opening(body_mask, structure=np.ones((3, 3, 3)))
-
-        # Fill holes
         body_mask = ndimage.binary_fill_holes(body_mask)
-
         return body_mask.astype(np.uint8)
 
     def preprocess_case(
@@ -177,11 +259,12 @@ class AMOS22Preprocessor:
         image, image_metadata = self._load_image(image_path)
         original_spacing = image_metadata['original_spacing']
 
-        # Create body mask for better normalization
-        body_mask = self._create_body_mask(image)
+        # Detect modality and create body mask for better normalization
+        modality = self._detect_modality(image, image_path, image_metadata)
+        body_mask = self._create_body_mask(image, modality)
 
-        # Normalize intensity
-        image_normalized = self._normalize_intensity(image, body_mask)
+        # Normalize intensity with modality-aware logic
+        image_normalized = self._normalize_intensity(image, modality, body_mask)
 
         # Resample to target spacing
         image_resampled = self._resample_image(
@@ -203,7 +286,8 @@ class AMOS22Preprocessor:
                 'preprocessed_spacing': self.target_spacing,
                 'preprocessed_shape': image_final.shape,
                 'normalization': self.intensity_normalization,
-                'clip_range': self.clip_range
+                'clip_range': self.clip_range,
+                'modality': modality
             }
         }
 
@@ -456,12 +540,21 @@ class AMOSDataset(Dataset):
 
         return cases
 
-    def _load_case(self, case_info: Dict) -> Tuple[np.ndarray, np.ndarray]:
-        """Load and preprocess a single case"""
+    def _load_case(self, case_info: Dict) -> Tuple[np.ndarray, np.ndarray, str]:
+        """Load and preprocess a single case, returning modality too."""
+        modality = 'CT'
         if case_info['preprocessed']:
             # Load preprocessed data
             image = np.load(case_info['image'])
             label = np.load(case_info['label'])
+            # Try to load modality from metadata
+            metadata_path = case_info['image'].parent / f"{case_info['case_id']}_metadata.npy"
+            if metadata_path.exists():
+                try:
+                    meta = np.load(metadata_path, allow_pickle=True).item()
+                    modality = meta.get('modality', 'CT')
+                except Exception:
+                    modality = 'CT'
         else:
             # Load and preprocess raw data
             result = self.preprocessor.preprocess_case(
@@ -470,8 +563,9 @@ class AMOSDataset(Dataset):
             )
             image = result['image']
             label = result['label']
+            modality = result.get('metadata', {}).get('modality', 'CT')
 
-        return image, label
+        return image, label, modality
 
     def _extract_patch(self, image: np.ndarray, label: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Extract a random patch from the volume"""
@@ -508,7 +602,7 @@ class AMOSDataset(Dataset):
         case_info = self.cases[idx]
 
         # Load case
-        image, label = self._load_case(case_info)
+        image, label, modality = self._load_case(case_info)
 
         # Extract patch
         image_patch, label_patch = self._extract_patch(image, label)
@@ -532,5 +626,6 @@ class AMOSDataset(Dataset):
         return {
             'image': image_tensor,
             'label': label_tensor,
-            'case_id': case_info['case_id']
+            'case_id': case_info['case_id'],
+            'modality': modality
         }

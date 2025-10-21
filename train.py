@@ -609,17 +609,11 @@ class Trainer:
             organ_metrics = None
 
             if (epoch + 1) % self.config['training']['validation_freq'] == 0:
-                # Check if we should compute detailed metrics (HD95, NSD) this epoch
-                detailed_freq = self.config['training'].get('detailed_metrics_freq', 5)
-                compute_detailed = (epoch + 1) % detailed_freq == 0
-
-                if not compute_detailed:
-                    print("Running fast validation (Dice only)...")
-                else:
-                    print("Running detailed validation (Dice + HD95 + NSD)...")
+                # Always compute detailed metrics so HD95/NSD are populated
+                print("Running detailed validation (Dice + HD95 + NSD)...")
 
                 val_loss, val_dice, val_loss_components, organ_metrics = self.validate(
-                    compute_detailed_metrics=compute_detailed
+                    compute_detailed_metrics=True
                 )
 
                 # Store validation metrics

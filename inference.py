@@ -9,6 +9,7 @@ import sys
 import yaml
 import torch
 import numpy as np
+from scipy import ndimage
 import nibabel as nib
 from pathlib import Path
 import argparse
@@ -26,7 +27,7 @@ from src.utils.memory_utils import MemoryMonitor
 class LHANetPredictor:
     """Inference engine for LHA-Net"""
 
-    def __init__(self, config_path: str, checkpoint_path: str, device: str = 'auto'):
+    def __init__(self, config_path: str, checkpoint_path: str, device: str = 'auto', force_modality: str = None):
         """
         Initialize predictor
 
@@ -51,9 +52,13 @@ class LHANetPredictor:
 
         # Get preprocessing parameters
         self.target_spacing = self.config['data']['preprocessing']['target_spacing']
-        self.clip_range = self.config['data']['preprocessing']['clip_range']
+        # CT clip range keeps backward compatibility; MRI handled separately
+        self.clip_range = self.config['data']['preprocessing'].get('clip_range', [-200, 300])
         self.patch_size = self.config['data']['patch_size']
         self.overlap_ratio = self.config['data']['overlap_ratio']
+
+        # Optional modality override
+        self.force_modality = force_modality.upper() if force_modality else None
 
         # Organ names for labeling
         self.organ_names = [
@@ -64,6 +69,44 @@ class LHANetPredictor:
 
         # Memory monitor
         self.memory_monitor = MemoryMonitor(self.device)
+
+    def _detect_modality(self, image: np.ndarray, path: str = "") -> str:
+        """Heuristic modality detection for NIfTI data."""
+        img_min = float(np.nanmin(image))
+        img_max = float(np.nanmax(image))
+        lp = str(path).lower()
+        if 'ct' in lp:
+            return 'CT'
+        if 'mr' in lp or 'mri' in lp:
+            return 'MRI'
+        frac_below_m200 = float((image < -200).mean()) if image.size > 0 else 0.0
+        likely_ct = (img_min < -500) or (img_min < 0 and img_max > 1000) or (frac_below_m200 > 0.001)
+        return 'CT' if likely_ct else 'MRI'
+
+    def _create_body_mask(self, image: np.ndarray, modality: str) -> np.ndarray:
+        if modality == 'CT':
+            mask = image > -500
+        else:
+            # Simple MRI mask via Otsu threshold on a smoothed image
+            smoothed = ndimage.gaussian_filter(image, sigma=1.0)
+            # Robust range
+            lo = np.percentile(smoothed, 0.5)
+            hi = np.percentile(smoothed, 99.5)
+            if hi <= lo:
+                thr = float(np.median(smoothed))
+            else:
+                hist, bin_edges = np.histogram(np.clip(smoothed, lo, hi), bins=256, range=(lo, hi))
+                prob = hist.astype(np.float64) / (hist.sum() + 1e-8)
+                omega = np.cumsum(prob)
+                mu = np.cumsum(prob * (bin_edges[:-1] + bin_edges[1:]) / 2.0)
+                mu_t = mu[-1]
+                sigma_b2 = (mu_t * omega - mu) ** 2 / (omega * (1.0 - omega) + 1e-8)
+                idx = int(np.nanargmax(sigma_b2))
+                thr = float((bin_edges[idx] + bin_edges[idx + 1]) / 2.0)
+            mask = smoothed > thr
+        mask = ndimage.binary_opening(mask, structure=np.ones((3, 3, 3)))
+        mask = ndimage.binary_fill_holes(mask)
+        return mask.astype(np.uint8)
 
     def build_model(self) -> torch.nn.Module:
         """Build LHA-Net model"""
@@ -104,7 +147,7 @@ class LHANetPredictor:
 
         print("Model loaded successfully!\n")
 
-    def preprocess_image(self, image: np.ndarray) -> np.ndarray:
+    def preprocess_image(self, image: np.ndarray, modality_hint: str = None) -> np.ndarray:
         """
         Preprocess medical image
 
@@ -114,18 +157,37 @@ class LHANetPredictor:
         Returns:
             Preprocessed image array
         """
-        # Clip intensity values
-        image = np.clip(image, self.clip_range[0], self.clip_range[1])
+        # Determine modality
+        modality = self.force_modality or modality_hint
+        if modality is None:
+            modality = self._detect_modality(image)
+        print(f"Detected modality: {modality}")
 
-        # Z-score normalization
-        mean = np.mean(image)
-        std = np.std(image)
-        if std > 0:
-            image = (image - mean) / std
+        # Create body mask for robust stats
+        mask = self._create_body_mask(image, modality)
+
+        if modality == 'CT':
+            # CT: clip to HU window then z-score
+            image = np.clip(image, self.clip_range[0], self.clip_range[1])
+            masked = image[mask > 0]
+            mean = float(np.mean(masked)) if masked.size > 0 else float(np.mean(image))
+            std = float(np.std(masked)) if masked.size > 0 else float(np.std(image))
+            image = (image - mean) / std if std > 0 else (image - mean)
         else:
-            image = image - mean
+            # MRI: percentile clip then z-score
+            p_low, p_high = (1.0, 99.0)
+            mri_cfg = self.config.get('data', {}).get('preprocessing', {}).get('mri', {})
+            if 'percentiles' in mri_cfg and isinstance(mri_cfg['percentiles'], (list, tuple)) and len(mri_cfg['percentiles']) == 2:
+                p_low, p_high = float(mri_cfg['percentiles'][0]), float(mri_cfg['percentiles'][1])
+            p1 = float(np.percentile(image, p_low))
+            p99 = float(np.percentile(image, p_high))
+            image = np.clip(image, p1, p99)
+            masked = image[mask > 0]
+            mean = float(np.mean(masked)) if masked.size > 0 else float(np.mean(image))
+            std = float(np.std(masked)) if masked.size > 0 else float(np.std(image))
+            image = (image - mean) / std if std > 0 else (image - mean)
 
-        return image
+        return image.astype(np.float32)
 
     def extract_patches(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, ...]]]:
         """
@@ -431,11 +493,13 @@ def main():
                         help='Save probability maps in addition to segmentation')
     parser.add_argument('--batch-mode', action='store_true',
                         help='Process all NIfTI files in input directory')
+    parser.add_argument('--force-modality', type=str, default=None, choices=['ct', 'mri'],
+                        help='Force modality for preprocessing (overrides auto)')
 
     args = parser.parse_args()
 
     # Create predictor
-    predictor = LHANetPredictor(args.config, args.checkpoint, device=args.device)
+    predictor = LHANetPredictor(args.config, args.checkpoint, device=args.device, force_modality=args.force_modality)
 
     # Run inference
     if args.batch_mode:
