@@ -64,11 +64,35 @@ class Trainer:
         )
 
         # Initialize comprehensive metrics calculator
-        self.organ_names = [
+        # Default names (used if config['labels'] not provided)
+        default_organ_names = [
             'background', 'liver', 'right_kidney', 'spleen', 'pancreas',
             'aorta', 'ivc', 'right_adrenal', 'left_adrenal', 'gallbladder',
             'esophagus', 'stomach', 'duodenum', 'left_kidney', 'class_14', 'class_15'
         ]
+        num_classes = self.config['model']['num_classes']
+        labels_map = self.config.get('labels', None)
+        if labels_map:
+            # Build ordered list by class index 0..num_classes-1
+            ordered = []
+            for i in range(num_classes):
+                key = str(i)
+                if key in labels_map:
+                    ordered.append(labels_map[key])
+                else:
+                    # Fallback to default or generic
+                    if i < len(default_organ_names):
+                        ordered.append(default_organ_names[i])
+                    else:
+                        ordered.append(f'class_{i}')
+            self.organ_names = ordered
+        else:
+            # Fallback to defaults, pad/truncate to match num_classes
+            if len(default_organ_names) < num_classes:
+                default_organ_names = list(default_organ_names) + [f'class_{i}' for i in range(len(default_organ_names), num_classes)]
+            elif len(default_organ_names) > num_classes:
+                default_organ_names = default_organ_names[:num_classes]
+            self.organ_names = default_organ_names
         self.metrics_calculator = SegmentationMetrics(
             num_classes=self.config['model']['num_classes'],
             spacing=tuple(self.config['data']['preprocessing']['target_spacing']),

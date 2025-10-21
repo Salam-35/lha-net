@@ -55,12 +55,32 @@ class LHANetPredictor:
         self.patch_size = self.config['data']['patch_size']
         self.overlap_ratio = self.config['data']['overlap_ratio']
 
-        # Organ names for labeling
-        self.organ_names = [
+        # Organ names for labeling: prefer config['labels'] if present
+        default_organ_names = [
             'background', 'liver', 'right_kidney', 'spleen', 'pancreas',
             'aorta', 'ivc', 'right_adrenal', 'left_adrenal', 'gallbladder',
             'esophagus', 'stomach', 'duodenum', 'left_kidney', 'class_14', 'class_15'
         ]
+        num_classes = self.config['model']['num_classes']
+        labels_map = self.config.get('labels', None)
+        if labels_map:
+            ordered = []
+            for i in range(num_classes):
+                key = str(i)
+                if key in labels_map:
+                    ordered.append(labels_map[key])
+                else:
+                    if i < len(default_organ_names):
+                        ordered.append(default_organ_names[i])
+                    else:
+                        ordered.append(f'class_{i}')
+            self.organ_names = ordered
+        else:
+            if len(default_organ_names) < num_classes:
+                default_organ_names = list(default_organ_names) + [f'class_{i}' for i in range(len(default_organ_names), num_classes)]
+            elif len(default_organ_names) > num_classes:
+                default_organ_names = default_organ_names[:num_classes]
+            self.organ_names = default_organ_names
 
         # Memory monitor
         self.memory_monitor = MemoryMonitor(self.device)

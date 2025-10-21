@@ -135,6 +135,8 @@ data:
     random_flip: true
     gaussian_noise_std: 0.01
 
+  # (removed organ_names; see top-level `labels` instead)
+
 # Hardware and system configuration
 system:
   # Device configuration
@@ -198,6 +200,26 @@ experimental:
   progressive_resizing: false
   initial_patch_size: [64, 64, 64]
   final_patch_size: [96, 128, 128]
+
+# Labels mapping: class index -> human-readable name
+# All scripts (train/test/inference) will use these for per-class names.
+labels:
+  "0": "background"
+  "1": "spleen"
+  "2": "right kidney"
+  "3": "left kidney"
+  "4": "gall bladder"
+  "5": "esophagus"
+  "6": "liver"
+  "7": "stomach"
+  "8": "arota"
+  "9": "postcava"
+  "10": "pancreas"
+  "11": "right adrenal gland"
+  "12": "left adrenal gland"
+  "13": "duodenum"
+  "14": "bladder"
+  "15": "prostate/uterus"
 
   # EMA (Exponential Moving Average)
   use_ema: false
