@@ -399,31 +399,31 @@ class Trainer:
                                 compute_now_detailed = True
 
                             if compute_now_detailed:
-                            # Compute all metrics including HD95 and NSD (slower)
-                            metrics = self.metrics_calculator.compute_all_metrics(
-                                pred_masks[b],
-                                labels[b],
-                                case_id=f"val_batch{batch_idx}_sample{b}"
-                            )
+                                # Compute all metrics including HD95 and NSD (slower)
+                                metrics = self.metrics_calculator.compute_all_metrics(
+                                    pred_masks[b],
+                                    labels[b],
+                                    case_id=f"val_batch{batch_idx}_sample{b}"
+                                )
 
-                            # Store per-organ dice scores
-                            for organ, dice_val in metrics['dice_scores'].items():
-                                if organ in per_organ_dice:
-                                    per_organ_dice[organ].append(dice_val)
+                                # Store per-organ dice scores
+                                for organ, dice_val in metrics['dice_scores'].items():
+                                    if organ in per_organ_dice:
+                                        per_organ_dice[organ].append(dice_val)
 
-                            # Store HD95 scores
-                            for organ, hd95_val in metrics['hd95_scores'].items():
-                                if organ in per_organ_hd95 and not np.isinf(hd95_val):
-                                    per_organ_hd95[organ].append(hd95_val)
+                                # Store HD95 scores
+                                for organ, hd95_val in metrics['hd95_scores'].items():
+                                    if organ in per_organ_hd95 and not np.isinf(hd95_val):
+                                        per_organ_hd95[organ].append(hd95_val)
 
-                            # Store NSD scores
-                            for organ, nsd_val in metrics['nsd_scores'].items():
-                                if organ in per_organ_nsd:
-                                    per_organ_nsd[organ].append(nsd_val)
+                                # Store NSD scores
+                                for organ, nsd_val in metrics['nsd_scores'].items():
+                                    if organ in per_organ_nsd:
+                                        per_organ_nsd[organ].append(nsd_val)
 
-                            # Overall dice (excluding background)
-                            all_dice_scores.append(metrics['mean_dice'])
-                            processed_detailed += 1
+                                # Overall dice (excluding background)
+                                all_dice_scores.append(metrics['mean_dice'])
+                                processed_detailed += 1
                             else:
                                 # Fast-only per-sample metrics when skipping detailed
                                 pred_one_hot = np.zeros((self.config['model']['num_classes'],) + pred_masks[b].shape, dtype=np.float32)
