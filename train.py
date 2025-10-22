@@ -348,6 +348,12 @@ class Trainer:
             'routing_loss': 0.0
         }
 
+        # Limit number of detailed cases if configured (to keep epoch time bounded)
+        detailed_limit = 0
+        if compute_detailed_metrics:
+            detailed_limit = int(self.config.get('evaluation', {}).get('detailed_sample_cases', 0) or 0)
+        processed_detailed = 0
+
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc="Validation")
 
@@ -385,6 +391,14 @@ class Trainer:
                     # Compute metrics for this sample
                     try:
                         if compute_detailed_metrics:
+                            # Respect detailed sampling limit if set (>0)
+                            if detailed_limit > 0 and processed_detailed >= detailed_limit:
+                                # Fallback to fast metrics for remaining samples
+                                compute_now_detailed = False
+                            else:
+                                compute_now_detailed = True
+
+                            if compute_now_detailed:
                             # Compute all metrics including HD95 and NSD (slower)
                             metrics = self.metrics_calculator.compute_all_metrics(
                                 pred_masks[b],
@@ -409,6 +423,22 @@ class Trainer:
 
                             # Overall dice (excluding background)
                             all_dice_scores.append(metrics['mean_dice'])
+                            processed_detailed += 1
+                            else:
+                                # Fast-only per-sample metrics when skipping detailed
+                                pred_one_hot = np.zeros((self.config['model']['num_classes'],) + pred_masks[b].shape, dtype=np.float32)
+                                labels_one_hot = np.zeros((self.config['model']['num_classes'],) + labels[b].shape, dtype=np.float32)
+                                for c in range(self.config['model']['num_classes']):
+                                    pred_one_hot[c] = (pred_masks[b].cpu().numpy() == c).astype(np.float32)
+                                    labels_one_hot[c] = (labels[b].cpu().numpy() == c).astype(np.float32)
+                                for c, organ in enumerate(self.organ_names):
+                                    dice = compute_dice_score(pred_one_hot[c], labels_one_hot[c], ignore_background=False)
+                                    per_organ_dice[organ].append(dice)
+                                dice = compute_dice_score(pred_masks[b], labels[b], ignore_background=True)
+                                if isinstance(dice, np.ndarray):
+                                    all_dice_scores.append(dice.mean())
+                                else:
+                                    all_dice_scores.append(dice)
                         else:
                             # Fast mode: Only compute Dice scores (much faster)
                             # Convert to one-hot for per-class dice computation

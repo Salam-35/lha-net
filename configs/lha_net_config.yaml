@@ -165,6 +165,9 @@ evaluation:
     - "hausdorff_95"
     - "normalized_surface_distance"
     - "volume_similarity"
+  # Compute HD95/NSD on a limited number of validation cases when detailed
+  # Set 0 to use all validation cases
+  detailed_sample_cases: 0
 
   # Statistical analysis
   statistical_tests: true

@@ -75,6 +75,37 @@ def compute_dice_score(
         return np.clip(dice, 0.0, 1.0)
 
 
+def _binary_surface(mask: np.ndarray) -> np.ndarray:
+    """Return binary surface mask (1 where on surface)."""
+    structure = ndimage.generate_binary_structure(3, 2)
+    eroded = ndimage.binary_erosion(mask, structure, iterations=1, border_value=0)
+    surface = mask ^ eroded
+    return surface.astype(np.uint8)
+
+
+def _surface_distances_mm(a: np.ndarray, b: np.ndarray, spacing: Tuple[float, float, float]) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute distances from surface(a) to surface(b) and vice versa using EDT (in mm)."""
+    a = (a > 0).astype(np.uint8)
+    b = (b > 0).astype(np.uint8)
+
+    surf_a = _binary_surface(a)
+    surf_b = _binary_surface(b)
+
+    # If surfaces are empty, return empty arrays
+    if surf_a.sum() == 0 and surf_b.sum() == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
+
+    # Distance transform to the nearest surface voxel
+    # EDT computes distance to the nearest zero; use inverse surface mask so that surface voxels are zeros
+    dt_b = ndimage.distance_transform_edt(1 - surf_b, sampling=spacing)
+    dt_a = ndimage.distance_transform_edt(1 - surf_a, sampling=spacing)
+
+    dists_a_to_b = dt_b[surf_a.astype(bool)] if surf_a.sum() > 0 else np.array([], dtype=np.float32)
+    dists_b_to_a = dt_a[surf_b.astype(bool)] if surf_b.sum() > 0 else np.array([], dtype=np.float32)
+
+    return dists_a_to_b.astype(np.float32), dists_b_to_a.astype(np.float32)
+
+
 def compute_hausdorff_distance(
     pred: Union[torch.Tensor, np.ndarray],
     target: Union[torch.Tensor, np.ndarray],
@@ -82,59 +113,33 @@ def compute_hausdorff_distance(
     percentile: float = 95.0
 ) -> float:
     """
-    Compute Hausdorff distance (95th percentile by default)
-
-    Args:
-        pred: Predicted binary mask
-        target: Ground truth binary mask
-        spacing: Voxel spacing in mm
-        percentile: Percentile for robust Hausdorff distance
-
-    Returns:
-        Hausdorff distance in mm (finite scalar)
+    Robust Hausdorff distance (percentile) using distance transforms (fast, in mm).
     """
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
     if isinstance(target, torch.Tensor):
         target = target.detach().cpu().numpy()
 
-    # Convert to binary if needed
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
-    # Precompute a conservative max possible distance for the volume
-    # Use spatial diagonal length (in mm) as a finite stand-in for "worst-case" distance
     vol_diag_mm = float(np.linalg.norm(np.array(pred.shape) * np.array(spacing)))
 
-    # Check if both masks are empty -> define distance as 0 (no discrepancy)
-    if np.sum(pred) == 0 and np.sum(target) == 0:
+    if pred.sum() == 0 and target.sum() == 0:
         return 0.0
-
-    # Check if one mask is empty -> define a large finite distance (volume diagonal)
-    if np.sum(pred) == 0 or np.sum(target) == 0:
+    if pred.sum() == 0 or target.sum() == 0:
         return vol_diag_mm
 
-    # Find surface points
-    pred_surface = _extract_surface_points(pred, spacing)
-    target_surface = _extract_surface_points(target, spacing)
-
-    if len(pred_surface) == 0 or len(target_surface) == 0:
-        return vol_diag_mm
-
-    # Compute distances
     try:
-        distances_1 = [np.min([np.linalg.norm(p - t) for t in target_surface]) for p in pred_surface]
-        distances_2 = [np.min([np.linalg.norm(t - p) for p in pred_surface]) for t in target_surface]
-
-        all_distances = distances_1 + distances_2
-
-        if not all_distances:
+        d1, d2 = _surface_distances_mm(pred, target, spacing)
+        if d1.size == 0 and d2.size == 0:
             return vol_diag_mm
-
-        if percentile == 100.0:
-            return float(np.max(all_distances))
-        else:
-            return float(np.percentile(all_distances, percentile))
+        all_d = np.concatenate([d1, d2]) if d1.size and d2.size else (d1 if d1.size else d2)
+        if all_d.size == 0:
+            return vol_diag_mm
+        if percentile >= 100.0:
+            return float(np.max(all_d))
+        return float(np.percentile(all_d, percentile))
     except Exception as e:
         warnings.warn(f"HD95 computation failed: {e}")
         return vol_diag_mm
@@ -171,65 +176,28 @@ def compute_normalized_surface_distance(
     spacing: Tuple[float, float, float] = (1.0, 1.0, 1.0),
     tolerance: float = 1.0
 ) -> float:
-    """
-    Compute Normalized Surface Distance (NSD)
-
-    Args:
-        pred: Predicted binary mask
-        target: Ground truth binary mask
-        spacing: Voxel spacing in mm
-        tolerance: Tolerance threshold in mm
-
-    Returns:
-        NSD score (0-1, higher is better)
-    """
+    """Normalized Surface Dice using distance transforms (fast)."""
     if isinstance(pred, torch.Tensor):
         pred = pred.detach().cpu().numpy()
     if isinstance(target, torch.Tensor):
         target = target.detach().cpu().numpy()
 
-    # Convert to binary
     pred = (pred > 0.5).astype(np.uint8)
     target = (target > 0.5).astype(np.uint8)
 
-    # Check if both masks are empty -> perfect agreement
-    if np.sum(pred) == 0 and np.sum(target) == 0:
+    if pred.sum() == 0 and target.sum() == 0:
         return 1.0
-
-    # Check if one mask is empty
-    if np.sum(pred) == 0 or np.sum(target) == 0:
-        return 0.0  # One empty, no match
-
-    # Extract surface points
-    pred_surface = _extract_surface_points(pred, spacing)
-    target_surface = _extract_surface_points(target, spacing)
-
-    if len(pred_surface) == 0 and len(target_surface) == 0:
-        return 1.0  # No surface found, but masks equal (both non-empty solids unlikely)
-
-    if len(pred_surface) == 0 or len(target_surface) == 0:
-        return 0.0  # No match if one has no surface
+    if pred.sum() == 0 or target.sum() == 0:
+        return 0.0
 
     try:
-        # Compute surface distances
-        distances_pred_to_target = []
-        for p in pred_surface:
-            min_dist = min([np.linalg.norm(p - t) for t in target_surface])
-            distances_pred_to_target.append(min_dist)
-
-        distances_target_to_pred = []
-        for t in target_surface:
-            min_dist = min([np.linalg.norm(t - p) for p in pred_surface])
-            distances_target_to_pred.append(min_dist)
-
-        # Count points within tolerance
-        pred_within_tolerance = sum([d <= tolerance for d in distances_pred_to_target])
-        target_within_tolerance = sum([d <= tolerance for d in distances_target_to_pred])
-
-        total_surface_points = len(pred_surface) + len(target_surface)
-        total_within_tolerance = pred_within_tolerance + target_within_tolerance
-
-        return float(total_within_tolerance / total_surface_points)
+        d1, d2 = _surface_distances_mm(pred, target, spacing)
+        n1 = (d1 <= tolerance).sum() if d1.size else 0
+        n2 = (d2 <= tolerance).sum() if d2.size else 0
+        total = (d1.size if d1 is not None else 0) + (d2.size if d2 is not None else 0)
+        if total == 0:
+            return 0.0
+        return float((n1 + n2) / total)
     except Exception as e:
         warnings.warn(f"NSD computation failed: {e}")
         return 0.0
