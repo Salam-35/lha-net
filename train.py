@@ -203,12 +203,18 @@ class Trainer:
         """Build loss function"""
         loss_config = self.config['loss']
 
+        # Pass through nested config knobs to losses for proper weighting
+        focal_kwargs = loss_config.get('focal_loss', {})
+        size_kwargs = loss_config.get('size_weighted_loss', {})
+
         criterion = ComboLoss(
             num_classes=self.config['model']['num_classes'],
             focal_weight=loss_config['focal_weight'],
             dice_weight=loss_config['dice_weight'],
             size_weight=loss_config['size_weight'],
-            deep_supervision_weight=loss_config['deep_supervision_weight']
+            deep_supervision_weight=loss_config['deep_supervision_weight'],
+            focal_kwargs=focal_kwargs,
+            size_kwargs=size_kwargs,
         )
 
         return criterion

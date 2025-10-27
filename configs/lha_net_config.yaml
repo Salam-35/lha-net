@@ -86,17 +86,25 @@ loss:
     gamma: 2.0
     adaptive_gamma: true
     size_aware_alpha: true
+    # Balanced class weighting: keep small>large but narrower gap
     organ_size_weights:
-      small: 3.0
-      medium: 2.0
+      small: 1.6
+      medium: 1.25
       large: 1.0
-      background: 0.1
+      background: 0.2
 
   # Size weighted loss
   size_weighted_loss:
     volume_adaptive: true
     spatial_weighting: true
-    boundary_emphasis: 2.0
+    # Lower boundary emphasis to avoid over-focusing on thin boundaries
+    boundary_emphasis: 1.2
+    # Balanced per-size weights (can override code defaults)
+    size_weights:
+      background: 0.2
+      small: 2.0
+      medium: 1.5
+      large: 1.0
 
 # Data configuration
 data:

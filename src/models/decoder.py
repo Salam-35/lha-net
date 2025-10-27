@@ -78,8 +78,13 @@ class SizeSpecificDecoder(nn.Module):
         )
 
     def _build_large_organ_decoder(self, in_channels: int, out_channels: int, num_classes: int):
+        # Increase capacity for large organs to better capture global structure
         return nn.Sequential(
-            nn.Conv3d(in_channels, out_channels // 2, 3, padding=1),
+            nn.Conv3d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(out_channels, out_channels // 2, 3, padding=1),
             nn.BatchNorm3d(out_channels // 2),
             nn.ReLU(inplace=True),
 

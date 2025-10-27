@@ -26,10 +26,11 @@ class AdaptiveFocalLoss(nn.Module):
         self.size_aware_alpha = size_aware_alpha
 
         if organ_size_weights is None:
+            # Balanced defaults: preserve small>large but reduce gap
             self.organ_size_weights = {
-                'small': 3.0,    # Higher weight for small organs
-                'medium': 2.0,   # Medium weight for medium organs
-                'large': 1.0     # Standard weight for large organs
+                'small': 1.6,
+                'medium': 1.25,
+                'large': 1.0
             }
         else:
             self.organ_size_weights = organ_size_weights

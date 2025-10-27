@@ -43,10 +43,11 @@ class SizeWeightedLoss(nn.Module):
 
         # Default size-based weights
         if size_weights is None:
+            # Balanced defaults: small still > large, but less extreme
             self.size_weights = {
-                'background': 0.1,
-                'small': 5.0,
-                'medium': 3.0,
+                'background': 0.2,
+                'small': 2.0,
+                'medium': 1.5,
                 'large': 1.0
             }
         else:
