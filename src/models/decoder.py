@@ -111,7 +111,20 @@ class OrganSizeAwareDecoder(nn.Module):
         if organ_size_mapping is None:
             self.organ_size_mapping = self._get_default_organ_mapping()
         else:
-            self.organ_size_mapping = organ_size_mapping
+            # Allow passing strings ('small'|'medium'|'large') and convert to OrganSize enum
+            converted: Dict[int, OrganSize] = {}
+            for k, v in organ_size_mapping.items():
+                if isinstance(v, OrganSize):
+                    converted[k] = v
+                else:
+                    vs = str(v).lower()
+                    if 'small' in vs:
+                        converted[k] = OrganSize.SMALL
+                    elif 'medium' in vs:
+                        converted[k] = OrganSize.MEDIUM
+                    else:
+                        converted[k] = OrganSize.LARGE
+            self.organ_size_mapping = converted
 
         self.size_classifiers = nn.ModuleList([
             OrganSizeClassifier(channels) for channels in feature_channels

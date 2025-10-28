@@ -14,7 +14,8 @@ class AdaptiveFocalLoss(nn.Module):
         ignore_index: int = -100,
         organ_size_weights: Optional[Dict[str, float]] = None,
         adaptive_gamma: bool = True,
-        size_aware_alpha: bool = True
+        size_aware_alpha: bool = True,
+        organ_size_mapping: Optional[Dict[int, str]] = None
     ):
         super().__init__()
 
@@ -35,23 +36,27 @@ class AdaptiveFocalLoss(nn.Module):
         else:
             self.organ_size_weights = organ_size_weights
 
-        # AMOS22 organ size mapping
-        self.organ_size_mapping = {
-            0: 'background',
-            1: 'large',     # liver
-            2: 'large',     # right kidney
-            3: 'large',     # spleen
-            4: 'large',     # pancreas
-            5: 'large',     # aorta
-            6: 'large',     # IVC
-            7: 'medium',    # right adrenal gland
-            8: 'medium',    # left adrenal gland
-            9: 'small',     # gallbladder
-            10: 'large',    # esophagus
-            11: 'large',    # stomach
-            12: 'small',    # duodenum
-            13: 'large',    # left kidney
-        }
+        # Organ size mapping (can be provided from config). Values: 'small'|'medium'|'large'|'background'
+        if organ_size_mapping is not None:
+            self.organ_size_mapping = organ_size_mapping
+        else:
+            # Fallback defaults (kept for backward compatibility; prefer passing mapping from config)
+            self.organ_size_mapping = {
+                0: 'background',
+                1: 'large',
+                2: 'large',
+                3: 'large',
+                4: 'large',
+                5: 'large',
+                6: 'large',
+                7: 'medium',
+                8: 'medium',
+                9: 'small',
+                10: 'large',
+                11: 'large',
+                12: 'small',
+                13: 'large',
+            }
 
     def _compute_class_frequencies(self, targets: torch.Tensor) -> torch.Tensor:
         """Compute class frequencies for adaptive weighting"""

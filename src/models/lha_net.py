@@ -19,7 +19,8 @@ class LHANet(nn.Module):
         organ_contexts: List[str] = ["small", "small", "medium", "medium", "large"],
         base_channels: int = 32,
         use_deep_supervision: bool = True,
-        memory_efficient: bool = True
+        memory_efficient: bool = True,
+        organ_size_mapping: Optional[Dict[int, str]] = None
     ):
         super().__init__()
 
@@ -55,7 +56,8 @@ class LHANet(nn.Module):
         self.decoder = OrganSizeAwareDecoder(
             feature_channels=backbone_channels[1:],
             decoder_channels=decoder_channels,
-            num_classes=num_classes
+            num_classes=num_classes,
+            organ_size_mapping=organ_size_mapping
         )
 
         if use_deep_supervision:

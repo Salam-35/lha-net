@@ -106,6 +106,26 @@ loss:
       medium: 1.5
       large: 1.0
 
+  # Unified label->size categories to ensure consistent weighting and routing
+  # Values: background|small|medium|large
+  size_categories:
+    "0": background
+    "1": large        # spleen
+    "2": large        # right kidney
+    "3": large        # left kidney
+    "4": small        # gall bladder
+    "5": medium       # esophagus
+    "6": large        # liver
+    "7": large        # stomach
+    "8": large        # aorta
+    "9": large        # postcava (IVC)
+    "10": medium      # pancreas
+    "11": medium      # right adrenal gland
+    "12": medium      # left adrenal gland
+    "13": small       # duodenum
+    "14": medium      # bladder
+    "15": medium      # prostate/uterus
+
 # Data configuration
 data:
   # Patch sampling

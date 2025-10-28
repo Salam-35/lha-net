@@ -128,6 +128,14 @@ class Trainer:
     def build_model(self):
         """Build LHA-Net model"""
         model_config = self.config['model']
+        loss_config = self.config.get('loss', {})
+        size_cats = loss_config.get('size_categories')
+
+        # Prepare organ size mapping for decoder if provided (string categories)
+        organ_size_mapping = None
+        if size_cats and isinstance(size_cats, dict):
+            # Convert string keys to int
+            organ_size_mapping = {int(k): v for k, v in size_cats.items()}
 
         model = LHANet(
             in_channels=model_config['in_channels'],
@@ -136,7 +144,8 @@ class Trainer:
             use_lightweight=model_config['use_lightweight'],
             use_deep_supervision=model_config['use_deep_supervision'],
             pmsa_scales=model_config['pmsa_scales'],
-            memory_efficient=model_config['memory_efficient']
+            memory_efficient=model_config['memory_efficient'],
+            organ_size_mapping=organ_size_mapping
         )
 
         model = model.to(self.device)
@@ -206,6 +215,13 @@ class Trainer:
         # Pass through nested config knobs to losses for proper weighting
         focal_kwargs = loss_config.get('focal_loss', {})
         size_kwargs = loss_config.get('size_weighted_loss', {})
+
+        # Unify class->size mapping for both focal and size-weighted losses if provided
+        size_cats = loss_config.get('size_categories')
+        if size_cats and isinstance(size_cats, dict):
+            mapping = {int(k): v for k, v in size_cats.items()}
+            focal_kwargs = {**focal_kwargs, 'organ_size_mapping': mapping}
+            size_kwargs = {**size_kwargs, 'organ_size_mapping': mapping}
 
         criterion = ComboLoss(
             num_classes=self.config['model']['num_classes'],
