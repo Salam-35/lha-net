@@ -30,13 +30,13 @@ training:
   batch_size: 1  # Physical batch size (will use gradient accumulation)
   effective_batch_size: 16  # Effective batch size through accumulation
 
-  # Learning rate and optimization
-  learning_rate: 0.001
+  # Learning rate and optimization (FIXED for stability)
+  learning_rate: 0.0005  # Reduced from 0.001 to prevent NaN
   optimizer:
     type: "adamw"
     weight_decay: 0.0001
     betas: [0.9, 0.999]
-    eps: 0.00000001
+    eps: 1e-7  # Increased from 1e-8 for numerical stability
     differential_lr: true
     backbone_lr_factor: 0.1
 
@@ -44,18 +44,18 @@ training:
   scheduler:
     type: "cosine_warmup"
     warmup_epochs: 5
-    min_lr: 0.000001
+    min_lr: 1e-6  # Increased from 1e-6
 
-  # Mixed precision training
+  # Mixed precision training (adjusted for stability)
   mixed_precision:
     enabled: true
-    init_scale: 65536.0
+    init_scale: 32768.0  # Reduced from 65536 for stability
     growth_factor: 2.0
     backoff_factor: 0.5
 
-  # Gradient accumulation and clipping
+  # Gradient accumulation and clipping (CRITICAL for stability)
   gradient_accumulation_steps: 8  # effective_batch_size / batch_size
-  max_grad_norm: 1.0
+  max_grad_norm: 0.5  # Reduced from 1.0 for better stability
 
   # Memory management
   memory_optimization:
@@ -81,15 +81,15 @@ loss:
   dice_weight: 0.3
   size_weight: 0.2
 
-  # Adaptive focal loss
+  # Adaptive focal loss (BALANCED to prevent liver crash)
   focal_loss:
     gamma: 2.0
     adaptive_gamma: true
     size_aware_alpha: true
     organ_size_weights:
-      small: 3.0
-      medium: 2.0
-      large: 1.0
+      small: 2.0    # Reduced from 3.0
+      medium: 2.0   # Same as large now
+      large: 2.0    # Increased from 1.0
       background: 0.1
 
   # Size weighted loss
@@ -105,17 +105,17 @@ data:
   overlap_ratio: 0.5
   patches_per_volume: 16
 
-  # Smart sampling strategy
+  # Smart sampling strategy (BALANCED to give large organs more attention)
   smart_sampling:
-    small_organ_bias: 0.7
+    small_organ_bias: 0.4  # Reduced from 0.7
     boundary_bias: 0.2
-    random_bias: 0.1
+    random_bias: 0.4  # Increased from 0.1 for better balance
     min_organ_voxels: 10
     difficulty_weights:
-      small: 4.0
-      medium: 2.5
-      large: 1.0
-      boundary: 3.0
+      small: 2.5    # Reduced from 4.0
+      medium: 2.0   # Reduced from 2.5
+      large: 2.0    # Increased from 1.0
+      boundary: 2.5 # Reduced from 3.0
       background: 0.5
 
   # Preprocessing

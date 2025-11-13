@@ -1,0 +1,157 @@
+# LHA-Net Adaptive PMSA Configuration
+# Addresses both adaptive scale learning AND training stability
+
+model:
+  name: "lha_net_adaptive"
+  type: "lightweight"  # Options: lightweight, standard, high_capacity
+
+  # Architecture parameters
+  in_channels: 1
+  num_classes: 16
+  backbone_type: "resnet18"
+  use_lightweight: true
+  base_channels: 32
+
+  # Adaptive PMSA configuration
+  use_adaptive_pmsa: true
+  scale_bank: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5]  # 9 candidate scales
+  num_active_scales: 5  # Model will select 5 out of 9
+  share_scale_selection: false  # Each level learns its own scales
+
+  # Decoder configuration
+  use_deep_supervision: true
+
+  # Memory optimization
+  memory_efficient: true
+  use_gradient_checkpointing: false
+
+# Training configuration
+training:
+  num_epochs: 100
+  batch_size: 2  # Increased from 1 for better stability
+  effective_batch_size: 16
+
+  # Learning rate (reduced for stability)
+  learning_rate: 0.0005  # Reduced from 0.001 to prevent NaN
+
+  # Optimizer
+  optimizer:
+    type: "adamw"
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1e-7  # Increased from 1e-8 for numerical stability
+    differential_lr: true
+    backbone_lr_factor: 0.1
+
+  # Scheduler
+  scheduler:
+    type: "cosine_warmup"
+    warmup_epochs: 5
+    min_lr: 1e-6
+
+  # Gradient settings (critical for stability)
+  gradient_accumulation_steps: 8
+  max_grad_norm: 0.5  # Reduced from 1.0 for better stability
+
+  # Checkpointing
+  save_dir: "checkpoints/adaptive_pmsa"
+
+  # Scale analysis settings
+  log_scale_freq: 5  # Print scale stats every 5 epochs
+  visualize_scale_freq: 10  # Create plots every 10 epochs
+
+# Loss configuration (BALANCED for all organ sizes)
+loss:
+  primary_loss_weight: 1.0
+  deep_supervision_weight: 0.4
+  size_prediction_weight: 0.1
+  routing_weight: 0.05
+
+  # Combo loss weights
+  focal_weight: 0.5
+  dice_weight: 0.3
+  size_weight: 0.2
+
+  # Adaptive focal loss (BALANCED - preventing liver crash)
+  focal_loss:
+    gamma: 2.0
+    adaptive_gamma: true
+    size_aware_alpha: true
+    # BALANCED organ size weights (fixed from biased version)
+    organ_size_weights:
+      small: 2.0    # Reduced from 3.0
+      medium: 2.0   # Same as large now
+      large: 2.0    # Increased from 1.0
+      background: 0.1
+
+# Data configuration (BALANCED sampling)
+data:
+  # Patch sampling
+  patch_size: [64, 128, 128]  # Slightly larger than original
+  patches_per_volume: 16
+
+  # Smart sampling (more balanced to prevent liver crash)
+  smart_sampling:
+    small_organ_bias: 0.4  # Reduced from 0.7
+    boundary_bias: 0.2
+    random_bias: 0.4  # Increased from 0.1
+
+    difficulty_weights:
+      small: 2.5    # Reduced from 4.0
+      medium: 2.0   # Reduced from 2.5
+      large: 2.0    # Increased from 1.0
+      boundary: 2.5 # Reduced from 3.0
+      background: 0.5
+
+  # Preprocessing
+  preprocessing:
+    target_spacing: [1.5, 1.5, 1.5]  # mm
+    intensity_normalization: "z_score"
+    clip_range: [-200, 300]  # HU
+
+  # Data augmentation
+  augmentation:
+    enabled: false  # Disabled initially for stability
+    rotation_range: [-15, 15]
+    scaling_range: [0.9, 1.1]
+    intensity_shift_range: [-0.1, 0.1]
+    intensity_scale_range: [0.9, 1.1]
+    elastic_deformation: false
+    random_flip: true
+    gaussian_noise_std: 0.01
+
+# System configuration
+system:
+  num_workers: 4
+  pin_memory: true
+  device: "cuda"
+
+# Paths configuration
+paths:
+  data_root: "/media/salam/projects/amos22/data/amos/"
+  output_dir: "/media/salam/projects/amos22/lha-net/adaptive/"
+  checkpoint_dir: "./checkpoints/adaptive_pmsa"
+  log_dir: "./logs/adaptive"
+
+# Reproducibility
+random_seed: 42
+deterministic: false
+
+# Labels mapping
+labels:
+  "0": "background"
+  "1": "spleen"
+  "2": "right kidney"
+  "3": "left kidney"
+  "4": "gall bladder"
+  "5": "esophagus"
+  "6": "liver"
+  "7": "stomach"
+  "8": "arota"
+  "9": "postcava"
+  "10": "pancreas"
+  "11": "right adrenal gland"
+  "12": "left adrenal gland"
+  "13": "duodenum"
+  "14": "bladder"
+  "15": "prostate/uterus"
