@@ -16,6 +16,12 @@ model:
   pmsa_scales: [0.5, 0.75, 1.0, 1.25, 1.5]
   organ_contexts: ["small", "small", "medium", "medium", "large"]
 
+  # Adaptive PMSA (optional - set to true to enable learnable scale selection)
+  use_adaptive_pmsa: false  # Set to true to use adaptive scale learning
+  scale_bank: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5]  # Only used if adaptive
+  num_active_scales: 5  # Only used if adaptive
+  share_scale_selection: false  # Only used if adaptive
+
   # Decoder configuration
   use_deep_supervision: true
 
@@ -68,6 +74,10 @@ training:
   validation_freq: 1  # Validate every N epochs (1 = every epoch)
   detailed_metrics_freq: 5  # Compute detailed metrics (HD95, NSD) every N epochs (slower)
   save_freq: 5  # Save checkpoint every N epochs
+
+  # Scale monitoring (only used if use_adaptive_pmsa: true)
+  log_scale_freq: 5  # Print scale statistics every N epochs
+  visualize_scale_freq: 10  # Save scale distribution plots every N epochs
 
 # Loss function configuration
 loss:

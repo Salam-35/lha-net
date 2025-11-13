@@ -28,6 +28,14 @@ from src.training.mixed_precision import MixedPrecisionTraining
 from src.evaluation.metrics import compute_dice_score, SegmentationMetrics
 from src.utils.memory_utils import MemoryMonitor
 
+# Adaptive PMSA imports (optional, only if using adaptive model)
+try:
+    from src.models.lha_net_adaptive import LHANetAdaptive
+    from src.utils.scale_analysis import ScaleAnalyzer
+    ADAPTIVE_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_AVAILABLE = False
+
 
 class Trainer:
     """Training manager for LHA-Net"""
@@ -113,6 +121,21 @@ class Trainer:
             'val': {'epochs': [], 'losses': [], 'dice_scores': [], 'per_organ_metrics': []}
         }
 
+        # Initialize scale analyzer if model supports it (for Adaptive PMSA)
+        self.scale_analyzer = None
+        self.scale_history = {}
+        if ADAPTIVE_AVAILABLE and hasattr(self.model, 'get_scale_statistics'):
+            scale_analysis_dir = self.output_dir / 'scale_analysis'
+            self.scale_analyzer = ScaleAnalyzer(self.model, save_dir=str(scale_analysis_dir))
+            print("✓ Scale analysis enabled (Adaptive PMSA detected)")
+
+            # Get scale monitoring frequencies from config (with defaults)
+            training_cfg = self.config.get('training', {})
+            self.log_scale_freq = training_cfg.get('log_scale_freq', 5)
+            self.visualize_scale_freq = training_cfg.get('visualize_scale_freq', 10)
+            print(f"  - Logging scale stats every {self.log_scale_freq} epochs")
+            print(f"  - Visualizing scales every {self.visualize_scale_freq} epochs")
+
     def setup_directories(self):
         """Create necessary directories"""
         self.output_dir = Path(self.config['paths']['output_dir'])
@@ -129,15 +152,37 @@ class Trainer:
         """Build LHA-Net model"""
         model_config = self.config['model']
 
-        model = LHANet(
-            in_channels=model_config['in_channels'],
-            num_classes=model_config['num_classes'],
-            base_channels=model_config['base_channels'],
-            use_lightweight=model_config['use_lightweight'],
-            use_deep_supervision=model_config['use_deep_supervision'],
-            pmsa_scales=model_config['pmsa_scales'],
-            memory_efficient=model_config['memory_efficient']
-        )
+        # Check if using Adaptive PMSA model
+        use_adaptive = model_config.get('use_adaptive_pmsa', False)
+
+        if use_adaptive and ADAPTIVE_AVAILABLE:
+            print("Building LHA-Net with Adaptive PMSA...")
+            model = LHANetAdaptive(
+                in_channels=model_config['in_channels'],
+                num_classes=model_config['num_classes'],
+                base_channels=model_config['base_channels'],
+                use_lightweight=model_config['use_lightweight'],
+                use_deep_supervision=model_config['use_deep_supervision'],
+                scale_bank=model_config.get('scale_bank', [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5]),
+                num_active_scales=model_config.get('num_active_scales', 5),
+                use_adaptive_pmsa=True,
+                share_scale_selection=model_config.get('share_scale_selection', False),
+                memory_efficient=model_config['memory_efficient']
+            )
+            print(f"  Scale bank: {model_config.get('scale_bank', [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5])}")
+            print(f"  Active scales: {model_config.get('num_active_scales', 5)}")
+        else:
+            print("Building LHA-Net with fixed scales...")
+            model = LHANet(
+                in_channels=model_config['in_channels'],
+                num_classes=model_config['num_classes'],
+                base_channels=model_config['base_channels'],
+                use_lightweight=model_config['use_lightweight'],
+                use_deep_supervision=model_config['use_deep_supervision'],
+                pmsa_scales=model_config['pmsa_scales'],
+                memory_efficient=model_config['memory_efficient']
+            )
+            print(f"  PMSA scales: {model_config['pmsa_scales']}")
 
         model = model.to(self.device)
 
@@ -708,6 +753,26 @@ class Trainer:
                 val_loss, val_dice, val_loss_components, organ_metrics
             )
 
+            # Scale monitoring (only if using Adaptive PMSA)
+            if self.scale_analyzer is not None:
+                # Log scale statistics periodically
+                if (epoch + 1) % self.log_scale_freq == 0:
+                    print("\n" + "-"*80)
+                    print("SCALE ANALYSIS:")
+                    print("-"*80)
+                    self.scale_analyzer.print_scale_summary()
+
+                    # Save scale history
+                    self.scale_history = self.scale_analyzer.save_scale_history(
+                        epoch + 1,
+                        self.scale_history
+                    )
+
+                # Visualize scales periodically
+                if (epoch + 1) % self.visualize_scale_freq == 0:
+                    print(f"\n✓ Saving scale distribution plot for epoch {epoch + 1}...")
+                    self.scale_analyzer.plot_scale_distribution(epoch=epoch + 1, show=False)
+
             # Save checkpoint periodically
             if (epoch + 1) % self.config['training']['save_freq'] == 0:
                 epoch_metrics = {
@@ -728,6 +793,21 @@ class Trainer:
 
         # Print final summary
         self.print_training_summary()
+
+        # Final scale analysis (if using Adaptive PMSA)
+        if self.scale_analyzer is not None:
+            print("\n" + "="*80)
+            print("FINAL SCALE CONFIGURATION")
+            print("="*80)
+            self.scale_analyzer.print_scale_summary()
+            self.scale_analyzer.compare_with_baseline()
+
+            # Plot scale evolution over training
+            if self.scale_history:
+                print("\n✓ Generating scale evolution plot...")
+                self.scale_analyzer.plot_scale_evolution(self.scale_history, show=False)
+
+            print("="*80)
 
 
 def main():
