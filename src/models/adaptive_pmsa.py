@@ -140,7 +140,8 @@ class AdaptivePMSAModule(nn.Module):
         scale_bank: List[float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5],
         num_active_scales: int = 5,
         reduction_ratio: int = 4,
-        use_adaptive_selection: bool = True
+        use_adaptive_selection: bool = True,
+        use_soft_selection: bool = True  # NEW: Use soft weighting for differentiable gradients
     ):
         super().__init__()
 
@@ -148,6 +149,7 @@ class AdaptivePMSAModule(nn.Module):
         self.scale_bank = scale_bank
         self.num_active_scales = num_active_scales
         self.use_adaptive_selection = use_adaptive_selection
+        self.use_soft_selection = use_soft_selection
 
         # Adaptive scale selector
         if use_adaptive_selection:
@@ -194,6 +196,13 @@ class AdaptivePMSAModule(nn.Module):
             nn.Sigmoid()
         )
 
+        # For soft selection mode (single weighted combination)
+        self.final_fusion_single = nn.Sequential(
+            nn.Conv3d(in_channels, in_channels, 1),
+            nn.BatchNorm3d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+
     def _assign_organ_context(self, scale: float) -> str:
         """
         Assign organ context based on scale value.
@@ -226,56 +235,94 @@ class AdaptivePMSAModule(nn.Module):
             output: Enhanced feature map [B, C, D, H, W]
             info: Dictionary with scale selection info and intermediate features
         """
-        # Get scale selection
+        # Get scale probabilities (always differentiable)
         if self.use_adaptive_selection:
-            selection_info = self.scale_selector(training=self.training)
-            selected_indices = selection_info['top_k_indices']
-            selected_scales = selection_info['selected_scales']
+            scale_probs = self.scale_selector.get_scale_probabilities()
         else:
-            # Fallback to first K scales if not using adaptive
-            selected_indices = torch.arange(self.num_active_scales, device=x.device)
-            selected_scales = self.scale_bank[:self.num_active_scales]
+            # Uniform probabilities if not using adaptive selection
+            scale_probs = torch.ones(len(self.scale_bank), device=x.device) / len(self.scale_bank)
 
-        # Process selected scales
-        scale_features = []
-        progressive_features = []
+        # Get top-k for logging purposes only (non-differentiable, but not used in computation)
+        with torch.no_grad():
+            top_k_values, top_k_indices = torch.topk(scale_probs, k=self.num_active_scales)
+            top_k_indices_sorted = torch.sort(top_k_indices)[0]
+            selected_scales = [self.scale_bank[i.item()] for i in top_k_indices_sorted]
 
-        for i, scale_idx in enumerate(selected_indices):
-            # Get scale-specific attention module
-            scale_module = self.scale_attentions[f'scale_{scale_idx.item()}']
+        if self.use_soft_selection:
+            # SOFT SELECTION: Weight all scales by probability (FULLY DIFFERENTIABLE!)
+            # This allows gradients to flow back to scale_logits
 
-            # Process at this scale
-            scale_feat = scale_module(x)
-            scale_features.append(scale_feat)
+            weighted_scale_features = []
 
-            # Progressive fusion
-            if i == 0:
-                progressive_feat = scale_feat
-            else:
-                # Concatenate all scale features up to this point
-                concatenated = torch.cat(scale_features[:i+1], dim=1)
-                progressive_feat = self.progressive_fusion[i-1](concatenated)
+            for i in range(len(self.scale_bank)):
+                # Get scale-specific attention module
+                scale_module = self.scale_attentions[f'scale_{i}']
 
-            progressive_features.append(progressive_feat)
+                # Process at this scale
+                scale_feat = scale_module(x)
 
-        # Final fusion of all progressive features
-        all_progressive = torch.cat(progressive_features, dim=1)
-        fused_features = self.final_fusion(all_progressive)
+                # Apply probability weighting (THIS IS THE KEY FOR DIFFERENTIABILITY!)
+                # Reshape prob for broadcasting: [1] -> [1, 1, 1, 1, 1]
+                prob_weight = scale_probs[i].view(1, 1, 1, 1, 1)
+                weighted_feat = scale_feat * prob_weight
 
-        # Gating mechanism
-        gate_weights = self.gate_conv(fused_features)
+                weighted_scale_features.append(weighted_feat)
 
-        # Average over spatial dimensions for gating
-        if len(gate_weights.shape) == 5:
-            gate_weights = gate_weights.mean(dim=[2, 3, 4], keepdim=True)
+            # Combine all weighted features (differentiable sum)
+            combined_features = sum(weighted_scale_features)
 
-        # Apply gating to progressive features
-        weighted_features = []
-        for i, feat in enumerate(progressive_features):
-            weight = gate_weights[:, i:i+1]
-            weighted_features.append(feat * weight)
+            # Final processing
+            final_output = self.final_fusion_single(combined_features)
 
-        final_output = sum(weighted_features)
+            # For info, store the weighted features
+            scale_features = weighted_scale_features
+            progressive_features = [combined_features]
+            gate_weights = None
+
+        else:
+            # HARD SELECTION: Original top-k (not differentiable, but kept for compatibility)
+            selected_indices = top_k_indices_sorted
+
+            # Process selected scales
+            scale_features = []
+            progressive_features = []
+
+            for i, scale_idx in enumerate(selected_indices):
+                # Get scale-specific attention module
+                scale_module = self.scale_attentions[f'scale_{scale_idx.item()}']
+
+                # Process at this scale
+                scale_feat = scale_module(x)
+                scale_features.append(scale_feat)
+
+                # Progressive fusion
+                if i == 0:
+                    progressive_feat = scale_feat
+                else:
+                    # Concatenate all scale features up to this point
+                    concatenated = torch.cat(scale_features[:i+1], dim=1)
+                    progressive_feat = self.progressive_fusion[i-1](concatenated)
+
+                progressive_features.append(progressive_feat)
+
+            # Final fusion of all progressive features
+            all_progressive = torch.cat(progressive_features, dim=1)
+            fused_features = self.final_fusion(all_progressive)
+
+            # Gating mechanism
+            gate_weights = self.gate_conv(fused_features)
+
+            # Average over spatial dimensions for gating
+            if len(gate_weights.shape) == 5:
+                gate_weights = gate_weights.mean(dim=[2, 3, 4], keepdim=True)
+
+            # Apply gating to progressive features
+            weighted_features = []
+            for i, feat in enumerate(progressive_features):
+                weight = gate_weights[:, i:i+1]
+                weighted_features.append(feat * weight)
+
+            final_output = sum(weighted_features)
 
         # Prepare return info
         info = {
@@ -287,8 +334,8 @@ class AdaptivePMSAModule(nn.Module):
 
         if self.use_adaptive_selection and return_scale_info:
             info.update({
-                'scale_probabilities': selection_info['scale_probabilities'],
-                'scale_indices': selected_indices
+                'scale_probabilities': scale_probs,
+                'scale_indices': top_k_indices_sorted
             })
 
         return final_output, info
@@ -308,7 +355,8 @@ class AdaptiveHierarchicalPMSA(nn.Module):
         scale_bank: List[float] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5],
         num_active_scales: int = 5,
         use_adaptive_selection: bool = True,
-        share_scale_selection: bool = False
+        share_scale_selection: bool = False,
+        use_soft_selection: bool = True
     ):
         """
         Args:
@@ -317,12 +365,14 @@ class AdaptiveHierarchicalPMSA(nn.Module):
             num_active_scales: Number of scales to use
             use_adaptive_selection: Whether to use learnable scale selection
             share_scale_selection: Whether all levels share the same scale selection
+            use_soft_selection: Whether to use soft (differentiable) scale selection
         """
         super().__init__()
 
         self.channels_list = channels_list
         self.num_levels = len(channels_list)
         self.share_scale_selection = share_scale_selection
+        self.use_soft_selection = use_soft_selection
 
         # Create PMSA modules for each level
         self.pmsa_modules = nn.ModuleDict()
@@ -339,7 +389,8 @@ class AdaptiveHierarchicalPMSA(nn.Module):
                 in_channels=channels,
                 scale_bank=scale_bank,
                 num_active_scales=num_active_scales,
-                use_adaptive_selection=use_adaptive_selection
+                use_adaptive_selection=use_adaptive_selection,
+                use_soft_selection=use_soft_selection
             )
 
             # Share scale selector across levels if requested

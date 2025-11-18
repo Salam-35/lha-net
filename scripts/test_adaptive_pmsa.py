@@ -220,10 +220,99 @@ def test_scale_evolution_simulation():
     print("\n" + "="*70 + "\n")
 
 
+def test_scale_gradient_flow():
+    """
+    Comprehensive test to verify gradients flow to scale_logits.
+    This is critical to ensure the adaptive mechanism can learn.
+    """
+    print("="*70)
+    print("TEST 5: Scale Gradient Flow Verification")
+    print("="*70)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}\n")
+
+    # Test with soft selection (should have gradients)
+    print("Testing SOFT SELECTION (should have gradients):")
+    print("-" * 70)
+
+    model = create_lha_net_adaptive(
+        config_type="lightweight",
+        num_classes=14,
+        use_adaptive_pmsa=True
+    ).to(device)
+    model.train()
+
+    # Forward pass
+    x = torch.randn(1, 1, 64, 128, 128, device=device)
+    target = torch.randint(0, 14, (1, 64, 128, 128), device=device)
+
+    output = model(x, return_features=True)
+    prediction = output['final_prediction']
+
+    # Loss
+    loss = torch.nn.functional.cross_entropy(prediction, target)
+    print(f"Loss: {loss.item():.4f}\n")
+
+    # Backward
+    loss.backward()
+
+    # Check scale_logits gradients
+    print("Scale Logits Gradient Check:")
+    has_gradient = False
+    gradient_info = []
+
+    for name, param in model.named_parameters():
+        if 'scale_logits' in name:
+            if param.grad is not None:
+                grad_mag = param.grad.abs().mean().item()
+                grad_max = param.grad.abs().max().item()
+                grad_min = param.grad.abs().min().item()
+
+                gradient_info.append({
+                    'name': name,
+                    'mean': grad_mag,
+                    'max': grad_max,
+                    'min': grad_min
+                })
+
+                if grad_mag > 1e-8:
+                    has_gradient = True
+                    print(f"  ✓ {name}")
+                    print(f"    Mean: {grad_mag:.6f}, Max: {grad_max:.6f}, Min: {grad_min:.6f}")
+                else:
+                    print(f"  ✗ {name}: gradient is ZERO!")
+            else:
+                print(f"  ✗ {name}: NO GRADIENT COMPUTED!")
+
+    if has_gradient:
+        print("\n✓ Gradients are flowing to scale selection parameters!")
+        print("  The adaptive mechanism can learn from data.")
+    else:
+        print("\n✗ NO GRADIENTS - Scale selection is NOT learning!")
+        print("  This means the scale probabilities will remain frozen.")
+
+    # Additional check: Verify gradient flow through different levels
+    print("\n" + "-" * 70)
+    print("Gradient Flow by Level:")
+    for level in range(4):  # Assuming 4 levels
+        level_has_grad = False
+        for info in gradient_info:
+            if f'level_{level}' in info['name']:
+                level_has_grad = True
+                print(f"  Level {level}: ✓ (mean grad: {info['mean']:.6f})")
+                break
+        if not level_has_grad:
+            print(f"  Level {level}: ✗ No gradient")
+
+    print("\n" + "="*70 + "\n")
+    return has_gradient
+
+
 def test_comparison_with_fixed():
     """Compare adaptive vs fixed scale configuration"""
     print("="*70)
-    print("TEST 5: Adaptive vs Fixed Scales Comparison")
+    print("TEST 6: Adaptive vs Fixed Scales Comparison")
     print("="*70)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -292,6 +381,7 @@ if __name__ == "__main__":
     test_scale_selection_consistency()
     test_backward_pass()
     test_scale_evolution_simulation()
+    test_scale_gradient_flow()  # NEW: Comprehensive gradient flow test
     test_comparison_with_fixed()
 
     print("="*70)
