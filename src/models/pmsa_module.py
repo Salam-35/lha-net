@@ -69,7 +69,20 @@ class ScaleSpecificAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.scale_factor != 1.0:
-            x_scaled = F.interpolate(x, scale_factor=self.scale_factor, mode='trilinear', align_corners=False)
+            # Safety check: Ensure output dimensions are at least 2x2x2
+            # to prevent interpolation errors with very small feature maps
+            input_size = x.shape[2:]  # D, H, W
+            target_size = [max(2, int(dim * self.scale_factor)) for dim in input_size]
+
+            # Compute actual safe scale factor
+            safe_scale = min(target_size[i] / input_size[i] for i in range(3))
+
+            # Only scale if dimensions would be valid (all >= 2)
+            if all(s >= 2 for s in target_size):
+                x_scaled = F.interpolate(x, size=target_size, mode='trilinear', align_corners=False)
+            else:
+                # Feature map too small for this scale, use original
+                x_scaled = x
         else:
             x_scaled = x
 
@@ -81,7 +94,8 @@ class ScaleSpecificAttention(nn.Module):
         x_context = self.context_conv(x_att)
         x_organ = self.organ_conv(x_context)
 
-        if self.scale_factor != 1.0:
+        # Restore to original size if we scaled
+        if x_organ.shape[2:] != x.shape[2:]:
             x_organ = F.interpolate(x_organ, size=x.shape[2:], mode='trilinear', align_corners=False)
 
         return x_organ
