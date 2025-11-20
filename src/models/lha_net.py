@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple, Optional, Union
 from .pmsa_module import HierarchicalPMSA
 from .decoder import OrganSizeAwareDecoder, MultiLevelDecoder
 from .backbone import ResNet3DBackbone, LightweightBackbone, resnet18_3d, resnet34_3d
+from .enhanced_backbone import EnhancedLightweightBackbone
 
 
 class LHANet(nn.Module):
@@ -15,6 +16,8 @@ class LHANet(nn.Module):
         num_classes: int = 14,
         backbone_type: str = "resnet18",
         use_lightweight: bool = True,
+        use_large_kernels: bool = False,
+        use_adaptive_kernels: bool = False,
         pmsa_scales: List[float] = [0.5, 0.75, 1.0, 1.25, 1.5],
         organ_contexts: List[str] = ["small", "small", "medium", "medium", "large"],
         base_channels: int = 32,
@@ -28,11 +31,21 @@ class LHANet(nn.Module):
         self.memory_efficient = memory_efficient
 
         if use_lightweight:
-            self.backbone = LightweightBackbone(
-                in_channels=in_channels,
-                base_channels=base_channels,
-                channel_multipliers=[1, 2, 4, 8, 16]
-            )
+            if use_large_kernels:
+                # Use enhanced backbone with large kernel convolutions
+                self.backbone = EnhancedLightweightBackbone(
+                    in_channels=in_channels,
+                    base_channels=base_channels,
+                    channel_multipliers=[1, 2, 4, 8, 16],
+                    use_adaptive_kernels=use_adaptive_kernels
+                )
+            else:
+                # Use standard lightweight backbone
+                self.backbone = LightweightBackbone(
+                    in_channels=in_channels,
+                    base_channels=base_channels,
+                    channel_multipliers=[1, 2, 4, 8, 16]
+                )
             backbone_channels = [int(base_channels * mult) for mult in [1, 2, 4, 8, 16]]
         else:
             if backbone_type == "resnet18":
