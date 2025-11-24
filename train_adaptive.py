@@ -21,7 +21,7 @@ from src.losses.combo_loss import LHANetLoss
 from src.training.optimizer import create_optimizer
 from src.training.scheduler import create_scheduler
 from src.training.adaptive_trainer import AdaptivePMSATrainer
-from src.data.dataset import AMOS22Dataset
+from src.data.preprocessed_dataset import AMOS22Dataset
 from torch.utils.data import DataLoader
 
 
@@ -40,10 +40,8 @@ def create_dataloaders(config: dict):
         data_dir=config['paths']['data_root'],
         split='train',
         patch_size=config['data']['patch_size'],
-        num_patches=config['data']['patches_per_volume'],
-        target_spacing=config['data']['preprocessing']['target_spacing'],
-        use_augmentation=config['data']['augmentation']['enabled'],
-        clip_range=config['data']['preprocessing']['clip_range']
+        num_patches_per_volume=config['data']['patches_per_volume'],
+        augmentation=config['data']['augmentation']['enabled']
     )
 
     train_loader = DataLoader(
@@ -59,10 +57,8 @@ def create_dataloaders(config: dict):
         data_dir=config['paths']['data_root'],
         split='val',
         patch_size=config['data']['patch_size'],
-        num_patches=config['data']['patches_per_volume'],
-        target_spacing=config['data']['preprocessing']['target_spacing'],
-        use_augmentation=False,
-        clip_range=config['data']['preprocessing']['clip_range']
+        num_patches_per_volume=config['data']['patches_per_volume'],
+        augmentation=False
     )
 
     val_loader = DataLoader(

@@ -23,12 +23,12 @@ model:
 
   # Memory optimization
   memory_efficient: true
-  use_gradient_checkpointing: false
+  use_gradient_checkpointing: true  # ENABLED to reduce memory usage
 
 # Training configuration
 training:
   num_epochs: 100
-  batch_size: 2  # Increased from 1 for better stability
+  batch_size: 1  # Reduced to 1 to fit in 24GB GPU
   effective_batch_size: 16
 
   # Learning rate (reduced for stability)
@@ -50,7 +50,7 @@ training:
     min_lr: 1e-6
 
   # Gradient settings (critical for stability)
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 16  # Increased to maintain effective batch size
   max_grad_norm: 0.5  # Reduced from 1.0 for better stability
 
   # Checkpointing
@@ -87,8 +87,8 @@ loss:
 # Data configuration (BALANCED sampling)
 data:
   # Patch sampling
-  patch_size: [64, 128, 128]  # Slightly larger than original
-  patches_per_volume: 16
+  patch_size: [48, 96, 96]  # Reduced size to fit in 24GB GPU
+  patches_per_volume: 8  # Reduced to decrease memory load
 
   # Smart sampling (more balanced to prevent liver crash)
   smart_sampling:
@@ -122,7 +122,7 @@ data:
 
 # System configuration
 system:
-  num_workers: 4
+  num_workers: 2  # Reduced to save system memory
   pin_memory: true
   device: "cuda"
 

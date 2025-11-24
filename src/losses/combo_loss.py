@@ -134,10 +134,13 @@ class LHANetLoss(nn.Module):
 
         for i, (output, weight) in enumerate(zip(deep_outputs, self.deep_supervision_weights)):
             # Resize output to match target size if needed
-            if output.shape[2:] != targets.shape[2:]:
+            # For 3D: output is (B, C, D, H, W), targets is (B, D, H, W)
+            # So we compare and resize using shape[2:] for output and shape[1:] for targets
+            target_spatial_size = targets.shape[1:] if targets.ndim == 4 else targets.shape[2:]
+            if output.shape[2:] != target_spatial_size:
                 output = torch.nn.functional.interpolate(
                     output,
-                    size=targets.shape[2:],
+                    size=target_spatial_size,
                     mode='trilinear',
                     align_corners=False
                 )
