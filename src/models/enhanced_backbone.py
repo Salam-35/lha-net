@@ -16,7 +16,7 @@ import torch.nn as nn
 from typing import List, Optional
 
 # Import the large kernel modules
-from .large_kernel_conv import (
+from large_kernel_conv import (
     DepthwiseSeparableConv3D,
     LargeKernelDepthwiseConv3D,
     MultiScaleLargeKernelBlock,
@@ -36,13 +36,13 @@ class EnhancedBasicBlock3D(nn.Module):
     expansion = 1
 
     def __init__(
-            self,
-            inplanes: int,
-            planes: int,
-            stride: int = 1,
-            downsample: Optional[nn.Module] = None,
-            use_large_kernel: bool = True,
-            kernel_size: int = 7
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+        use_large_kernel: bool = True,
+        kernel_size: int = 7
     ):
         super().__init__()
 
@@ -108,12 +108,12 @@ class EnhancedLightweightBackbone(nn.Module):
     """
 
     def __init__(
-            self,
-            in_channels: int = 1,
-            base_channels: int = 32,
-            channel_multipliers: List[float] = [1, 2, 4, 8, 16],
-            use_adaptive_kernels: bool = False,
-            kernel_sizes_per_stage: Optional[List[List[int]]] = None
+        self,
+        in_channels: int = 1,
+        base_channels: int = 32,
+        channel_multipliers: List[float] = [1, 2, 4, 8, 16],
+        use_adaptive_kernels: bool = False,
+        kernel_sizes_per_stage: Optional[List[List[int]]] = None
     ):
         super().__init__()
 
@@ -122,10 +122,10 @@ class EnhancedLightweightBackbone(nn.Module):
         # Default: progressively larger kernels at deeper stages
         if kernel_sizes_per_stage is None:
             kernel_sizes_per_stage = [
-                [3, 7, 11],  # Stage 1: focus on local + medium
-                [3, 7, 15],  # Stage 2: medium range
-                [3, 11, 21],  # Stage 3: medium to large
-                [3, 11, 21],  # Stage 4: large receptive field
+                [3, 7, 11],      # Stage 1: focus on local + medium
+                [3, 7, 15],      # Stage 2: medium range
+                [3, 11, 21],     # Stage 3: medium to large
+                [3, 11, 21],     # Stage 4: large receptive field
             ]
 
         channels = [int(base_channels * mult) for mult in channel_multipliers]
@@ -145,24 +145,24 @@ class EnhancedLightweightBackbone(nn.Module):
             if use_adaptive_kernels:
                 block = nn.Sequential(
                     # Downsampling conv
-                    nn.Conv3d(channels[i], channels[i + 1], 3, stride=2, padding=1, bias=False),
-                    nn.BatchNorm3d(channels[i + 1]),
+                    nn.Conv3d(channels[i], channels[i+1], 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm3d(channels[i+1]),
                     nn.GELU(),
                     # Adaptive large kernel block
                     AdaptiveLargeKernelBlock(
-                        channels=channels[i + 1],
+                        channels=channels[i+1],
                         kernel_sizes=[3, 7, 11, 15, 21]
                     )
                 )
             else:
                 block = nn.Sequential(
                     # Downsampling conv
-                    nn.Conv3d(channels[i], channels[i + 1], 3, stride=2, padding=1, bias=False),
-                    nn.BatchNorm3d(channels[i + 1]),
+                    nn.Conv3d(channels[i], channels[i+1], 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm3d(channels[i+1]),
                     nn.GELU(),
                     # Multi-scale large kernel block
                     MultiScaleLargeKernelBlock(
-                        channels=channels[i + 1],
+                        channels=channels[i+1],
                         kernel_sizes=stage_kernels
                     )
                 )
@@ -211,12 +211,12 @@ class HybridBackbone(nn.Module):
     """
 
     def __init__(
-            self,
-            in_channels: int = 1,
-            base_channels: int = 32,
-            channel_multipliers: List[float] = [1, 2, 4, 8, 16],
-            large_kernel_stages: List[int] = [2, 3],  # Which stages use large kernels
-            kernel_sizes: List[int] = [3, 11, 21]
+        self,
+        in_channels: int = 1,
+        base_channels: int = 32,
+        channel_multipliers: List[float] = [1, 2, 4, 8, 16],
+        large_kernel_stages: List[int] = [2, 3],  # Which stages use large kernels
+        kernel_sizes: List[int] = [3, 11, 21]
     ):
         super().__init__()
 
@@ -236,22 +236,22 @@ class HybridBackbone(nn.Module):
             if i in large_kernel_stages:
                 # Use large kernel block
                 block = nn.Sequential(
-                    nn.Conv3d(channels[i], channels[i + 1], 3, stride=2, padding=1, bias=False),
-                    nn.BatchNorm3d(channels[i + 1]),
+                    nn.Conv3d(channels[i], channels[i+1], 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm3d(channels[i+1]),
                     nn.GELU(),
                     MultiScaleLargeKernelBlock(
-                        channels=channels[i + 1],
+                        channels=channels[i+1],
                         kernel_sizes=kernel_sizes
                     )
                 )
             else:
                 # Use standard conv block
                 block = nn.Sequential(
-                    nn.Conv3d(channels[i], channels[i + 1], 3, stride=2, padding=1, bias=False),
-                    nn.BatchNorm3d(channels[i + 1]),
+                    nn.Conv3d(channels[i], channels[i+1], 3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm3d(channels[i+1]),
                     nn.GELU(),
-                    nn.Conv3d(channels[i + 1], channels[i + 1], 3, padding=1, bias=False),
-                    nn.BatchNorm3d(channels[i + 1]),
+                    nn.Conv3d(channels[i+1], channels[i+1], 3, padding=1, bias=False),
+                    nn.BatchNorm3d(channels[i+1]),
                     nn.GELU()
                 )
 
@@ -282,9 +282,9 @@ class HybridBackbone(nn.Module):
 
 # Factory functions for easy instantiation
 def create_enhanced_backbone(
-        in_channels: int = 1,
-        base_channels: int = 32,
-        variant: str = "multi_scale"
+    in_channels: int = 1,
+    base_channels: int = 32,
+    variant: str = "multi_scale"
 ) -> nn.Module:
     """
     Create enhanced backbone with specified variant.
@@ -330,10 +330,10 @@ To integrate with your existing LHA-Net:
    - enhanced_backbone.py
 
 2. In lha_net.py, replace the backbone import:
-
+   
    # Old:
    from .backbone import LightweightBackbone
-
+   
    # New:
    from .enhanced_backbone import EnhancedLightweightBackbone
 
@@ -344,7 +344,7 @@ To integrate with your existing LHA-Net:
        in_channels=in_channels,
        base_channels=base_channels
    )
-
+   
    # New (multi-scale large kernels):
    self.backbone = EnhancedLightweightBackbone(
        in_channels=in_channels,
@@ -353,7 +353,7 @@ To integrate with your existing LHA-Net:
    )
 
 4. Update your config (lha_net_config.yaml):
-
+   
    model:
      backbone_type: "enhanced"  # or "adaptive" or "hybrid"
      use_large_kernels: true
