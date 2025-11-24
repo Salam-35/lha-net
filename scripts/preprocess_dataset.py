@@ -105,15 +105,15 @@ class NNUNetPreprocessor:
 
         if len(nonzero[0]) == 0:
             # No foreground, return as is
-            bbox = [(0, s) for s in image.shape]
+            bbox = [(0, int(s)) for s in image.shape]
             return image, label, bbox
 
         # Get bounding box
         bbox = []
         slices = []
         for i in range(3):
-            min_idx = max(0, nonzero[i].min() - margin)
-            max_idx = min(image.shape[i], nonzero[i].max() + margin + 1)
+            min_idx = int(max(0, nonzero[i].min() - margin))
+            max_idx = int(min(image.shape[i], nonzero[i].max() + margin + 1))
             bbox.append((min_idx, max_idx))
             slices.append(slice(min_idx, max_idx))
 

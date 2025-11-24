@@ -197,15 +197,16 @@ def create_lha_net_adaptive(
 ) -> LHANetAdaptive:
     """Factory function to create LHA-Net with Adaptive PMSA"""
 
-    # Extract adaptive_pmsa flag if provided in kwargs
+    # Extract flags from kwargs to avoid duplicate arguments
     use_adaptive_pmsa = kwargs.pop('use_adaptive_pmsa', True)
+    base_channels = kwargs.pop('base_channels', None)
 
     if config_type == "lightweight":
         return LHANetAdaptive(
             num_classes=num_classes,
             backbone_type="resnet18",
             use_lightweight=True,
-            base_channels=32,
+            base_channels=base_channels if base_channels is not None else 32,
             memory_efficient=True,
             use_adaptive_pmsa=use_adaptive_pmsa,
             **kwargs
@@ -215,7 +216,7 @@ def create_lha_net_adaptive(
             num_classes=num_classes,
             backbone_type="resnet18",
             use_lightweight=False,
-            base_channels=64,
+            base_channels=base_channels if base_channels is not None else 64,
             memory_efficient=True,
             use_adaptive_pmsa=use_adaptive_pmsa,
             **kwargs
@@ -225,7 +226,7 @@ def create_lha_net_adaptive(
             num_classes=num_classes,
             backbone_type="resnet34",
             use_lightweight=False,
-            base_channels=64,
+            base_channels=base_channels if base_channels is not None else 64,
             memory_efficient=False,
             use_adaptive_pmsa=use_adaptive_pmsa,
             **kwargs
