@@ -161,7 +161,13 @@ def test_training_pipeline():
     print("\n9. Testing loss computation...")
 
     try:
-        loss_result = criterion(outputs, dummy_target)
+        # Extract prediction from model output
+        if isinstance(outputs, dict):
+            prediction = outputs['final_prediction']
+        else:
+            prediction = outputs
+
+        loss_result = criterion(prediction, dummy_target)
 
         if isinstance(loss_result, dict):
             total_loss = loss_result.get('total_loss', loss_result.get('loss'))
@@ -222,7 +228,14 @@ def test_training_pipeline():
 
             with torch.cuda.amp.autocast(enabled=mp_trainer.enabled):
                 outputs = model(dummy_input)
-                loss_result = criterion(outputs, dummy_target)
+
+                # Extract prediction from model output
+                if isinstance(outputs, dict):
+                    prediction = outputs['final_prediction']
+                else:
+                    prediction = outputs
+
+                loss_result = criterion(prediction, dummy_target)
 
                 if isinstance(loss_result, dict):
                     loss = loss_result.get('total_loss', loss_result.get('loss'))

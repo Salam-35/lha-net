@@ -125,6 +125,7 @@ system:
   num_workers: 2  # Reduced to save system memory
   pin_memory: true
   device: "cuda"
+  memory_log_interval: 10  # Log GPU memory every N batches
 
 # Paths configuration
 paths:

@@ -1,0 +1,157 @@
+# LHA-Net Adaptive Configuration - OPTIMIZED FOR 24GB GPU
+# This config reduces model size to fit in 24GB GPU memory
+
+model:
+  name: "lha_net_adaptive_24gb"
+  type: "lightweight"
+
+  # Architecture parameters
+  in_channels: 1
+  num_classes: 16
+  backbone_type: "resnet18"
+  use_lightweight: true
+  base_channels: 24  # REDUCED from 32 to 24 (25% reduction)
+
+  # Adaptive PMSA configuration
+  use_adaptive_pmsa: true
+  scale_bank: [0.5, 0.75, 1.0, 1.5, 2.0]  # REDUCED from 9 to 5 scales
+  num_active_scales: 3  # REDUCED from 5 to 3
+  share_scale_selection: false
+
+  # Decoder configuration
+  use_deep_supervision: true
+
+  # Memory optimization (CRITICAL)
+  memory_efficient: true
+  use_gradient_checkpointing: true  # REQUIRED
+
+# Training configuration
+training:
+  num_epochs: 100
+  batch_size: 1
+  effective_batch_size: 16
+
+  # Learning rate
+  learning_rate: 0.0005
+
+  # Optimizer
+  optimizer:
+    type: "adamw"
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 0.0000001  # Changed from scientific notation
+    differential_lr: true
+    backbone_lr_factor: 0.1
+
+  # Scheduler
+  scheduler:
+    type: "cosine_warmup"
+    warmup_epochs: 5
+    min_lr: 0.000001  # Changed from scientific notation
+
+  # Gradient settings
+  gradient_accumulation_steps: 16
+  max_grad_norm: 0.5
+
+  # Checkpointing
+  save_dir: "checkpoints/adaptive_24gb"
+
+  # Scale analysis
+  log_scale_freq: 5
+  visualize_scale_freq: 10
+
+# Loss configuration
+loss:
+  primary_loss_weight: 1.0
+  deep_supervision_weight: 0.4
+  size_prediction_weight: 0.1
+  routing_weight: 0.05
+
+  # Combo loss weights
+  focal_weight: 0.5
+  dice_weight: 0.3
+  size_weight: 0.2
+
+  # Adaptive focal loss
+  focal_loss:
+    gamma: 2.0
+    adaptive_gamma: true
+    size_aware_alpha: true
+    organ_size_weights:
+      small: 2.0
+      medium: 2.0
+      large: 2.0
+      background: 0.1
+
+# Data configuration
+data:
+  # Patch sampling (OPTIMIZED)
+  patch_size: [48, 96, 96]  # Keep same size
+  patches_per_volume: 8
+
+  # Smart sampling
+  smart_sampling:
+    small_organ_bias: 0.4
+    boundary_bias: 0.2
+    random_bias: 0.4
+
+    difficulty_weights:
+      small: 2.5
+      medium: 2.0
+      large: 2.0
+      boundary: 2.5
+      background: 0.5
+
+  # Preprocessing
+  preprocessing:
+    target_spacing: [1.5, 1.5, 1.5]
+    intensity_normalization: "z_score"
+    clip_range: [-200, 300]
+
+  # Data augmentation
+  augmentation:
+    enabled: false
+    rotation_range: [-15, 15]
+    scaling_range: [0.9, 1.1]
+    intensity_shift_range: [-0.1, 0.1]
+    intensity_scale_range: [0.9, 1.1]
+    elastic_deformation: false
+    random_flip: true
+    gaussian_noise_std: 0.01
+
+# System configuration
+system:
+  num_workers: 2
+  pin_memory: true
+  device: "cuda"
+  memory_log_interval: 10  # Log GPU memory every N batches
+
+# Paths configuration
+paths:
+  data_root: "/media/salam/projects/amos22/data/amos/"
+  output_dir: "/media/salam/projects/amos22/lha-net/adaptive_24gb/"
+  checkpoint_dir: "./checkpoints/adaptive_24gb"
+  log_dir: "./logs/adaptive_24gb"
+
+# Reproducibility
+random_seed: 42
+deterministic: false
+
+# Labels mapping
+labels:
+  "0": "background"
+  "1": "spleen"
+  "2": "right kidney"
+  "3": "left kidney"
+  "4": "gall bladder"
+  "5": "esophagus"
+  "6": "liver"
+  "7": "stomach"
+  "8": "arota"
+  "9": "postcava"
+  "10": "pancreas"
+  "11": "right adrenal gland"
+  "12": "left adrenal gland"
+  "13": "duodenum"
+  "14": "bladder"
+  "15": "prostate/uterus"

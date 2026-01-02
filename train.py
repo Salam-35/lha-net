@@ -355,7 +355,8 @@ class Trainer:
             })
 
             # Log GPU memory periodically
-            if batch_idx % self.config['system']['memory_log_interval'] == 0:
+            memory_log_interval = self.config['system'].get('memory_log_interval', 10)
+            if batch_idx % memory_log_interval == 0:
                 if torch.cuda.is_available():
                     memory_stats = self.memory_monitor.get_memory_stats()
                     pbar.set_postfix({
