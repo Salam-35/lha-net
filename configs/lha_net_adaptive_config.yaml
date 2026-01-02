@@ -39,7 +39,7 @@ training:
     type: "adamw"
     weight_decay: 0.0001
     betas: [0.9, 0.999]
-    eps: 1e-7  # Increased from 1e-8 for numerical stability
+    eps: 0.0000001  # Changed from 1e-7 for YAML compatibility
     differential_lr: true
     backbone_lr_factor: 0.1
 
@@ -47,14 +47,21 @@ training:
   scheduler:
     type: "cosine_warmup"
     warmup_epochs: 5
-    min_lr: 1e-6
+    min_lr: 0.000001  # Changed from 1e-6 for YAML compatibility
 
   # Gradient settings (critical for stability)
   gradient_accumulation_steps: 16  # Increased to maintain effective batch size
   max_grad_norm: 0.5  # Reduced from 1.0 for better stability
 
-  # Checkpointing
+  # Checkpointing and validation
   save_dir: "checkpoints/adaptive_pmsa"
+  save_freq: 10  # Save checkpoint every N epochs
+  validation_freq: 1  # Validate every N epochs
+  detailed_metrics_freq: 5  # Compute HD95/NSD every N epochs
+
+  # Memory optimization
+  memory_optimization:
+    empty_cache_freq: 5  # Clear GPU cache every N epochs
 
   # Scale analysis settings
   log_scale_freq: 5  # Print scale stats every 5 epochs

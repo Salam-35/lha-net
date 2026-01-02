@@ -53,8 +53,15 @@ training:
   gradient_accumulation_steps: 16
   max_grad_norm: 0.5
 
-  # Checkpointing
+  # Checkpointing and validation
   save_dir: "checkpoints/adaptive_24gb"
+  save_freq: 10  # Save checkpoint every N epochs
+  validation_freq: 1  # Validate every N epochs
+  detailed_metrics_freq: 5  # Compute HD95/NSD every N epochs
+
+  # Memory optimization
+  memory_optimization:
+    empty_cache_freq: 5  # Clear GPU cache every N epochs
 
   # Scale analysis
   log_scale_freq: 5

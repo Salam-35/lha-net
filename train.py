@@ -709,7 +709,8 @@ class Trainer:
             val_loss_components = None
             organ_metrics = None
 
-            if (epoch + 1) % self.config['training']['validation_freq'] == 0:
+            validation_freq = self.config['training'].get('validation_freq', 1)
+            if (epoch + 1) % validation_freq == 0:
                 # Check if we should compute detailed metrics (HD95, NSD) this epoch
                 detailed_freq = self.config['training'].get('detailed_metrics_freq', 5)
                 compute_detailed = (epoch + 1) % detailed_freq == 0
@@ -776,7 +777,8 @@ class Trainer:
                     self.scale_analyzer.plot_scale_distribution(epoch=epoch + 1, show=False)
 
             # Save checkpoint periodically
-            if (epoch + 1) % self.config['training']['save_freq'] == 0:
+            save_freq = self.config['training'].get('save_freq', 10)
+            if (epoch + 1) % save_freq == 0:
                 epoch_metrics = {
                     'epoch': epoch + 1,
                     'train_loss': train_loss,
@@ -785,7 +787,8 @@ class Trainer:
                 self.save_checkpoint(epoch_metrics=epoch_metrics)
 
             # Clear GPU cache periodically
-            if torch.cuda.is_available() and (epoch + 1) % self.config['training']['memory_optimization']['empty_cache_freq'] == 0:
+            empty_cache_freq = self.config['training'].get('memory_optimization', {}).get('empty_cache_freq', 5)
+            if torch.cuda.is_available() and (epoch + 1) % empty_cache_freq == 0:
                 torch.cuda.empty_cache()
 
         print("\n" + "="*50)
