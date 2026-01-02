@@ -144,9 +144,10 @@ def test_training_pipeline():
             outputs = model(dummy_input)
 
         if isinstance(outputs, dict):
-            main_output = outputs['output']
+            main_output = outputs.get('final_prediction', outputs.get('output'))
             print(f"   Output shape: {main_output.shape}")
-            print(f"   Deep supervision outputs: {len(outputs.get('deep_outputs', []))}")
+            deep_outputs = outputs.get('deep_supervision_outputs', outputs.get('deep_outputs', []))
+            print(f"   Deep supervision outputs: {len(deep_outputs)}")
         else:
             main_output = outputs
             print(f"   Output shape: {main_output.shape}")
@@ -160,16 +161,16 @@ def test_training_pipeline():
     print("\n9. Testing loss computation...")
 
     try:
-        if isinstance(outputs, dict):
-            loss_dict = criterion(outputs, dummy_target)
-            total_loss = loss_dict['total_loss']
+        loss_result = criterion(outputs, dummy_target)
+
+        if isinstance(loss_result, dict):
+            total_loss = loss_result.get('total_loss', loss_result.get('loss'))
             print(f"   Total loss: {total_loss.item():.4f}")
-            for k, v in loss_dict.items():
-                if k != 'total_loss':
+            for k, v in loss_result.items():
+                if k not in ['total_loss', 'loss'] and isinstance(v, torch.Tensor):
                     print(f"   {k}: {v.item():.4f}")
         else:
-            loss = criterion(outputs, dummy_target)
-            total_loss = loss if isinstance(loss, torch.Tensor) else loss['total_loss']
+            total_loss = loss_result
             print(f"   Total loss: {total_loss.item():.4f}")
 
         print("   ✓ Loss computation successful")
@@ -221,14 +222,12 @@ def test_training_pipeline():
 
             with torch.cuda.amp.autocast(enabled=mp_trainer.enabled):
                 outputs = model(dummy_input)
+                loss_result = criterion(outputs, dummy_target)
 
-                if isinstance(outputs, dict):
-                    loss_dict = criterion(outputs, dummy_target)
-                    loss = loss_dict['total_loss']
+                if isinstance(loss_result, dict):
+                    loss = loss_result.get('total_loss', loss_result.get('loss'))
                 else:
-                    loss = criterion(outputs, dummy_target)
-                    if isinstance(loss, dict):
-                        loss = loss['total_loss']
+                    loss = loss_result
 
             if mp_trainer.enabled:
                 mp_trainer.scaler.scale(loss).backward()
