@@ -208,7 +208,7 @@ class SegmentationMetrics:
 
     def __init__(
         self,
-        num_classes: int = 14,
+        num_classes: int = 16,
         spacing: Tuple[float, float, float] = (1.5, 1.5, 1.5),
         organ_names: Optional[List[str]] = None
     ):
@@ -216,18 +216,32 @@ class SegmentationMetrics:
         self.spacing = spacing
 
         if organ_names is None:
+            # AMOS22 dataset: 16 classes (0-15)
             self.organ_names = [
-                'background', 'liver', 'right_kidney', 'spleen', 'pancreas',
-                'aorta', 'ivc', 'right_adrenal', 'left_adrenal', 'gallbladder',
-                'esophagus', 'stomach', 'duodenum', 'left_kidney'
+                'background',           # 0
+                'spleen',              # 1
+                'right_kidney',        # 2
+                'left_kidney',         # 3
+                'gall_bladder',        # 4
+                'esophagus',           # 5
+                'liver',               # 6
+                'stomach',             # 7
+                'aorta',               # 8
+                'postcava',            # 9
+                'pancreas',            # 10
+                'right_adrenal',       # 11
+                'left_adrenal',        # 12
+                'duodenum',            # 13
+                'bladder',             # 14
+                'prostate_uterus'      # 15
             ]
         else:
             self.organ_names = organ_names
 
-        # Organ size categories for AMOS22
-        self.small_organs = [9, 12]  # gallbladder, duodenum
-        self.medium_organs = [7, 8]  # adrenal glands
-        self.large_organs = [1, 2, 3, 4, 5, 6, 10, 11, 13]  # rest
+        # Organ size categories for AMOS22 (16 classes)
+        self.small_organs = [4, 11, 12, 13]  # gall_bladder, adrenals, duodenum
+        self.medium_organs = [1, 10, 14, 15]  # spleen, pancreas, bladder, prostate
+        self.large_organs = [2, 3, 5, 6, 7, 8, 9]  # kidneys, esophagus, liver, stomach, aorta, postcava
 
     def compute_all_metrics(
         self,
@@ -277,10 +291,12 @@ class SegmentationMetrics:
 
         # 1. Dice scores
         dice_scores = self._compute_dice_per_class(pred_one_hot, target_one_hot)
+        # Safely map dice scores to organ names (handle mismatched lengths)
+        num_scores = min(len(dice_scores), len(self.organ_names))
         metrics['dice_scores'] = {
-            self.organ_names[i]: dice_scores[i] for i in range(len(dice_scores))
+            self.organ_names[i]: dice_scores[i] for i in range(num_scores)
         }
-        metrics['mean_dice'] = np.mean(dice_scores[1:])  # Exclude background
+        metrics['mean_dice'] = np.mean(dice_scores[1:num_scores])  # Exclude background
 
         # 2. Dice by organ size categories
         small_dice = [dice_scores[i] for i in self.small_organs if i < len(dice_scores)]
