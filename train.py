@@ -66,9 +66,10 @@ class Trainer:
         self.scheduler = self.build_scheduler()
 
         # Initialize mixed precision trainer
+        mp_config = self.config['training'].get('mixed_precision', {})
         self.mp_trainer = MixedPrecisionTraining(
-            enabled=self.config['training']['mixed_precision']['enabled'],
-            init_scale=self.config['training']['mixed_precision']['init_scale']
+            enabled=mp_config.get('enabled', False),
+            init_scale=mp_config.get('init_scale', 2**16)
         )
 
         # Initialize comprehensive metrics calculator
@@ -265,12 +266,12 @@ class Trainer:
         optimizer = create_optimizer(
             self.model,
             optimizer_type=opt_config['type'],
-            learning_rate=self.config['training']['learning_rate'],
-            weight_decay=opt_config.get('weight_decay', 1e-4),
+            learning_rate=float(self.config['training']['learning_rate']),
+            weight_decay=float(opt_config.get('weight_decay', 1e-4)),
             betas=tuple(opt_config.get('betas', [0.9, 0.999])),
-            eps=opt_config.get('eps', 1e-8),
+            eps=float(opt_config.get('eps', 1e-8)),
             differential_lr=opt_config.get('differential_lr', True),
-            backbone_lr_factor=opt_config.get('backbone_lr_factor', 0.1)
+            backbone_lr_factor=float(opt_config.get('backbone_lr_factor', 0.1))
         )
         return optimizer
 
@@ -283,7 +284,7 @@ class Trainer:
             scheduler_type=sched_config['type'],
             num_epochs=self.config['training']['num_epochs'],
             warmup_epochs=sched_config.get('warmup_epochs', 5),
-            min_lr=sched_config.get('min_lr', 1e-6)
+            min_lr=float(sched_config.get('min_lr', 1e-6))
         )
         return scheduler
 

@@ -16,7 +16,7 @@ import torch.nn as nn
 from typing import List, Optional
 
 # Import the large kernel modules
-from large_kernel_conv import (
+from .large_kernel_conv import (
     DepthwiseSeparableConv3D,
     LargeKernelDepthwiseConv3D,
     MultiScaleLargeKernelBlock,
