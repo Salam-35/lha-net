@@ -23,7 +23,7 @@ def inspect_checkpoint(checkpoint_path):
 
     # Load checkpoint
     print("\nLoading checkpoint...")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     # Basic info
     print("\n" + "="*80)
@@ -125,7 +125,7 @@ def inspect_checkpoint(checkpoint_path):
 def extract_training_history(checkpoint_path, output_dir=None):
     """Extract training history to JSON and CSV files"""
 
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     if 'metrics_history' not in checkpoint:
         print("No training history found in checkpoint")

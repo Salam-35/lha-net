@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.models.lha_net_adaptive import LHANetAdaptive
 from src.data.preprocessing import AMOSDataset
 from torch.utils.data import DataLoader
-from src.evaluation.metrics import SegmentationMetrics
+from src.evaluation.metrics import SegmentationMetrics, compute_dice_score
 
 
 def load_checkpoint(checkpoint_path, device='cuda'):
@@ -31,7 +31,7 @@ def load_checkpoint(checkpoint_path, device='cuda'):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Get config
     config = checkpoint['config']
@@ -44,6 +44,7 @@ def load_checkpoint(checkpoint_path, device='cuda'):
         num_classes=model_config['num_classes'],
         backbone_type=model_config['backbone_type'],
         use_lightweight=model_config.get('use_lightweight', True),
+        base_channels=model_config.get('base_channels', 32),
         scale_bank=model_config.get('scale_bank', [0.5, 0.75, 1.0, 1.5, 2.0]),
         num_active_scales=model_config.get('num_active_scales', 3),
         share_scale_selection=model_config.get('share_scale_selection', False),
@@ -159,11 +160,17 @@ def evaluate_model(checkpoint_path, data_root=None, split='val', device='cuda', 
         pred = all_predictions[i]
         label = all_labels[i]
 
-        # Overall dice
-        dice = metrics_calculator.compute_dice_score(
-            torch.from_numpy(pred).unsqueeze(0),
-            torch.from_numpy(label).unsqueeze(0)
-        )
+        # Overall dice - compute per-class and average
+        sample_dice_scores = []
+        for c in range(1, num_classes):  # Skip background
+            pred_c = (pred == c).astype(np.float32)
+            label_c = (label == c).astype(np.float32)
+
+            dice_c = compute_dice_score(pred_c, label_c, ignore_background=False)
+            sample_dice_scores.append(dice_c)
+
+        # Average across classes
+        dice = np.mean(sample_dice_scores)
         dice_scores.append(dice)
 
         # Per-organ dice
@@ -171,11 +178,9 @@ def evaluate_model(checkpoint_path, data_root=None, split='val', device='cuda', 
             pred_c = (pred == c).astype(np.float32)
             label_c = (label == c).astype(np.float32)
 
-            intersection = np.sum(pred_c * label_c)
-            union = np.sum(pred_c) + np.sum(label_c)
-
-            if union > 0:
-                organ_dice = 2.0 * intersection / union
+            # Only compute if this organ is present in ground truth
+            if np.sum(label_c) > 0:
+                organ_dice = compute_dice_score(pred_c, label_c, ignore_background=False)
                 per_organ_dice[organ_names[c]].append(organ_dice)
 
     # Print results

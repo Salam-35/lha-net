@@ -18,7 +18,7 @@ def plot_training_history(checkpoint_path, output_dir=None, show=False):
     print("="*80)
 
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     if 'metrics_history' not in checkpoint:
         print("✗ No training history found in checkpoint")
