@@ -160,20 +160,8 @@ def evaluate_model(checkpoint_path, data_root=None, split='val', device='cuda', 
         pred = all_predictions[i]
         label = all_labels[i]
 
-        # Overall dice - compute per-class and average
-        sample_dice_scores = []
-        for c in range(1, num_classes):  # Skip background
-            pred_c = (pred == c).astype(np.float32)
-            label_c = (label == c).astype(np.float32)
-
-            dice_c = compute_dice_score(pred_c, label_c, ignore_background=False)
-            sample_dice_scores.append(dice_c)
-
-        # Average across classes
-        dice = np.mean(sample_dice_scores)
-        dice_scores.append(dice)
-
         # Per-organ dice
+        sample_dice_scores = []
         for c in range(num_classes):
             pred_c = (pred == c).astype(np.float32)
             label_c = (label == c).astype(np.float32)
@@ -182,6 +170,15 @@ def evaluate_model(checkpoint_path, data_root=None, split='val', device='cuda', 
             if np.sum(label_c) > 0:
                 organ_dice = compute_dice_score(pred_c, label_c, ignore_background=False)
                 per_organ_dice[organ_names[c]].append(organ_dice)
+
+                # Also add to sample scores (only for present organs, excluding background)
+                if c > 0:  # Skip background
+                    sample_dice_scores.append(organ_dice)
+
+        # Overall dice: average only over organs present in this sample
+        if len(sample_dice_scores) > 0:
+            dice = np.mean(sample_dice_scores)
+            dice_scores.append(dice)
 
     # Print results
     print("\n" + "="*80)
